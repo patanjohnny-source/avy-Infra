@@ -1,0 +1,742 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwnerResource() {
+      return isVerified() && existing().ownerId == request.auth.uid;
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidDateStr(val) {
+      return val is string && val.size() >= 8 && val.size() <= 24;
+    }
+
+    function ownsDoc(collectionName, docId) {
+      return isValidId(docId)
+        && exists(/databases/$(database)/documents/$(collectionName)/$(docId))
+        && get(/databases/$(database)/documents/$(collectionName)/$(docId)).data.ownerId == request.auth.uid;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidCompanyProfile(data) {
+      return data.keys().hasAll(['ownerId', 'companyName', 'tileZoneCatalog', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'tileZoneCatalog', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidString(data.companyName, 1, 120)
+        && (!('tagline' in data) || isValidString(data.tagline, 0, 160))
+        && (!('address' in data) || isValidString(data.address, 0, 300))
+        && (!('hrContact' in data) || isValidString(data.hrContact, 0, 40))
+        && (!('hrEmail' in data) || isValidString(data.hrEmail, 0, 120))
+        && (!('gstNumber' in data) || isValidString(data.gstNumber, 0, 40))
+        && (!('pfEstCode' in data) || isValidString(data.pfEstCode, 0, 60))
+        && (!('esiCode' in data) || isValidString(data.esiCode, 0, 60))
+        && (!('signatoryName' in data) || isValidString(data.signatoryName, 0, 100))
+        && (!('logoDataUrl' in data) || isValidString(data.logoDataUrl, 0, 120000))
+        && (!('requireFinishBeforeNewWork' in data) || data.requireFinishBeforeNewWork is bool)
+        && (!('adminUsername' in data) || isValidString(data.adminUsername, 0, 60))
+        && (!('adminPassword' in data) || isValidString(data.adminPassword, 0, 80))
+        && (!('adminEditPin' in data) || isValidString(data.adminEditPin, 0, 24))
+        && (!('supervisorCanEditAttendance' in data) || data.supervisorCanEditAttendance is bool)
+        && (!('customAdvanceCategories' in data) || (data.customAdvanceCategories is list && data.customAdvanceCategories.size() <= 30 && (data.customAdvanceCategories.size() == 0 || data.customAdvanceCategories[0] is string)))
+        && (!('customExpenseCategories' in data) || (data.customExpenseCategories is list && data.customExpenseCategories.size() <= 30 && (data.customExpenseCategories.size() == 0 || data.customExpenseCategories[0] is string)))
+        && (!('weeklyExpenseBudget' in data) || ((data.weeklyExpenseBudget is int || data.weeklyExpenseBudget is float) && data.weeklyExpenseBudget >= 0 && data.weeklyExpenseBudget <= 100000000))
+        && (!('idCardFrontBgDataUrl' in data) || isValidString(data.idCardFrontBgDataUrl, 0, 120000))
+        && (!('idCardBackBgDataUrl' in data) || isValidString(data.idCardBackBgDataUrl, 0, 120000))
+        && (!('idCardBgColor' in data) || isValidString(data.idCardBgColor, 0, 24))
+        && (!('idCardHeaderColor' in data) || isValidString(data.idCardHeaderColor, 0, 24))
+        && (!('idCardAccentColor' in data) || isValidString(data.idCardAccentColor, 0, 24))
+        && (!('idCardTextColor' in data) || isValidString(data.idCardTextColor, 0, 24))
+        && (!('idCardBgOpacity' in data) || ((data.idCardBgOpacity is int || data.idCardBgOpacity is float) && data.idCardBgOpacity >= 0 && data.idCardBgOpacity <= 1))
+        && data.tileZoneCatalog is list
+        && data.tileZoneCatalog.size() >= 1
+        && data.tileZoneCatalog.size() <= 40
+        && data.tileZoneCatalog[0] is map
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'location', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidString(data.name, 1, 120)
+        && (!('location' in data) || isValidString(data.location, 0, 160))
+        && (!('clientName' in data) || isValidString(data.clientName, 0, 120))
+        && data.status in ['active', 'completed', 'on_hold']
+        && (!('startDate' in data) || isValidString(data.startDate, 0, 24))
+        && (!('finishDate' in data) || isValidString(data.finishDate, 0, 24))
+        && (!('managerName' in data) || isValidString(data.managerName, 0, 100))
+        && (!('managerPhone' in data) || isValidString(data.managerPhone, 0, 24))
+        && (!('engineerName' in data) || isValidString(data.engineerName, 0, 100))
+        && (!('engineerPhone' in data) || isValidString(data.engineerPhone, 0, 24))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTower(data) {
+      return data.keys().hasAll(['ownerId', 'projectId', 'name', 'totalFloors', 'unitsPerFloor', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'projectId', 'name', 'totalFloors', 'unitsPerFloor', 'startDate', 'finishDate', 'inchargeName', 'inchargePhone', 'supervisorName', 'supervisorPhone', 'engineerName', 'engineerPhone', 'managerName', 'managerPhone', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.projectId)
+        && isValidString(data.name, 1, 80)
+        && data.totalFloors is number && data.totalFloors >= 1 && data.totalFloors <= 180
+        && data.unitsPerFloor is number && data.unitsPerFloor >= 1 && data.unitsPerFloor <= 50
+        && (!('startDate' in data) || isValidString(data.startDate, 0, 24))
+        && (!('finishDate' in data) || isValidString(data.finishDate, 0, 24))
+        && (!('inchargeName' in data) || isValidString(data.inchargeName, 0, 100))
+        && (!('inchargePhone' in data) || isValidString(data.inchargePhone, 0, 24))
+        && (!('supervisorName' in data) || isValidString(data.supervisorName, 0, 100))
+        && (!('supervisorPhone' in data) || isValidString(data.supervisorPhone, 0, 24))
+        && (!('engineerName' in data) || isValidString(data.engineerName, 0, 100))
+        && (!('engineerPhone' in data) || isValidString(data.engineerPhone, 0, 24))
+        && (!('managerName' in data) || isValidString(data.managerName, 0, 100))
+        && (!('managerPhone' in data) || isValidString(data.managerPhone, 0, 24))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFlatUnit(data) {
+      return data.keys().hasAll(['ownerId', 'projectId', 'towerId', 'floorNumber', 'unitNumber', 'unitType', 'zones', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'projectId', 'towerId', 'floorNumber', 'floorLabel', 'unitNumber', 'unitType', 'zones', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.projectId)
+        && isValidId(data.towerId)
+        && data.floorNumber is number && data.floorNumber >= -10 && data.floorNumber <= 150
+        && (!('floorLabel' in data) || isValidString(data.floorLabel, 0, 60))
+        && isValidString(data.unitNumber, 1, 24)
+        && isValidString(data.unitType, 1, 40)
+        && data.zones is map
+        && data.zones.keys().size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['ownerId', 'empCode', 'fullName', 'role', 'phone', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'empCode', 'fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'loginPin', 'qrToken', 'status', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidString(data.empCode, 3, 32)
+        && data.empCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && isValidString(data.fullName, 1, 100)
+        && data.role in ['Mason', 'Helper', 'Material Shifting', 'Supervisor', 'Engineer']
+        && isValidString(data.phone, 7, 24)
+        && (!('alternatePhone' in data) || isValidString(data.alternatePhone, 0, 24))
+        && (!('email' in data) || isValidString(data.email, 0, 120))
+        && isValidDateStr(data.joiningDate)
+        && data.dailyRate is number && data.dailyRate >= 0 && data.dailyRate <= 100000
+        && data.overtimeRate is number && data.overtimeRate >= 0 && data.overtimeRate <= 50000
+        && data.foodAllowanceDaily is number && data.foodAllowanceDaily >= 0 && data.foodAllowanceDaily <= 10000
+        && (!('aadharRef' in data) || isValidString(data.aadharRef, 0, 40))
+        && (!('pfNumber' in data) || isValidString(data.pfNumber, 0, 60))
+        && (!('esiNumber' in data) || isValidString(data.esiNumber, 0, 60))
+        && (!('bloodGroup' in data) || isValidString(data.bloodGroup, 0, 12))
+        && (!('emergencyContact' in data) || isValidString(data.emergencyContact, 0, 120))
+        && (!('photoDataUrl' in data) || isValidString(data.photoDataUrl, 0, 120000))
+        && (!('currentProjectId' in data) || isValidString(data.currentProjectId, 0, 128))
+        && (!('currentProjectName' in data) || isValidString(data.currentProjectName, 0, 120))
+        && (!('currentTowerId' in data) || isValidString(data.currentTowerId, 0, 128))
+        && (!('currentTowerName' in data) || isValidString(data.currentTowerName, 0, 80))
+        && (!('assignedTowerIds' in data) || (data.assignedTowerIds is list && data.assignedTowerIds.size() <= 30))
+        && (!('loginPin' in data) || isValidString(data.loginPin, 0, 24))
+        && (!('qrToken' in data) || isValidString(data.qrToken, 0, 48))
+        && data.status in ['active', 'inactive']
+        && (!('notes' in data) || isValidString(data.notes, 0, 400))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEmployeeDocument(data) {
+      return data.keys().hasAll(['ownerId', 'employeeId', 'docCategory', 'title', 'fileName', 'mimeType', 'sizeBytes', 'dataUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'employeeId', 'docCategory', 'title', 'fileName', 'mimeType', 'sizeBytes', 'dataUrl', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.employeeId)
+        && data.docCategory in ['aadhar_pdf', 'other']
+        && isValidString(data.title, 1, 100)
+        && isValidString(data.fileName, 1, 160)
+        && isValidString(data.mimeType, 1, 80)
+        && data.sizeBytes is number && data.sizeBytes >= 1 && data.sizeBytes <= 600000
+        && isValidString(data.dataUrl, 1, 850000)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDeployment(data) {
+      return data.keys().hasAll(['ownerId', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'projectId', 'projectName', 'towerId', 'towerName', 'assignedDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'projectId', 'projectName', 'towerId', 'towerName', 'fromProjectName', 'fromTowerName', 'assignedDate', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.employeeName, 1, 100)
+        && isValidString(data.employeeRole, 1, 40)
+        && isValidId(data.projectId)
+        && isValidString(data.projectName, 1, 120)
+        && isValidId(data.towerId)
+        && isValidString(data.towerName, 1, 80)
+        && (!('fromProjectName' in data) || isValidString(data.fromProjectName, 0, 120))
+        && (!('fromTowerName' in data) || isValidString(data.fromTowerName, 0, 80))
+        && isValidDateStr(data.assignedDate)
+        && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkAssignment(data) {
+      return data.keys().hasAll(['ownerId', 'projectId', 'projectName', 'towerId', 'towerName', 'flatId', 'unitNumber', 'zoneKey', 'zoneLabel', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'assignedDate', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'projectId', 'projectName', 'towerId', 'towerName', 'flatId', 'unitNumber', 'zoneKey', 'zoneLabel', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'assignedDate', 'completedDate', 'targetSqft', 'status', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.projectId)
+        && isValidString(data.projectName, 1, 120)
+        && isValidId(data.towerId)
+        && isValidString(data.towerName, 1, 80)
+        && isValidId(data.flatId)
+        && isValidString(data.unitNumber, 1, 24)
+        && isValidString(data.zoneKey, 1, 64)
+        && isValidString(data.zoneLabel, 1, 80)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.employeeName, 1, 100)
+        && isValidString(data.employeeRole, 1, 40)
+        && isValidDateStr(data.assignedDate)
+        && (!('completedDate' in data) || isValidString(data.completedDate, 0, 24))
+        && (!('targetSqft' in data) || (data.targetSqft is number && data.targetSqft >= 0 && data.targetSqft <= 100000))
+        && data.status in ['assigned', 'prechecking', 'in_progress', 'completed', 'cleaning_in_progress', 'cleaning_done', 'qc_approved']
+        && (!('notes' in data) || isValidString(data.notes, 0, 400))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'projectId', 'projectName', 'towerId', 'towerName', 'status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidDateStr(data.date)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.employeeName, 1, 100)
+        && isValidString(data.employeeRole, 1, 40)
+        && (!('projectId' in data) || isValidString(data.projectId, 0, 128))
+        && (!('projectName' in data) || isValidString(data.projectName, 0, 120))
+        && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
+        && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
+        && data.status in ['present', 'half_day', 'absent']
+        && data.overtimeHours is number && data.overtimeHours >= 0 && data.overtimeHours <= 24
+        && data.dailyWageEarned is number && data.dailyWageEarned >= 0 && data.dailyWageEarned <= 100000
+        && data.overtimePayEarned is number && data.overtimePayEarned >= 0 && data.overtimePayEarned <= 100000
+        && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && (!('markedByRole' in data) || data.markedByRole in ['admin', 'supervisor'])
+        && (!('markedByName' in data) || isValidString(data.markedByName, 0, 100))
+        && (!('editedByName' in data) || isValidString(data.editedByName, 0, 100))
+        && (!('editedAt' in data) || isValidString(data.editedAt, 0, 40))
+        && (!('editReason' in data) || isValidString(data.editReason, 0, 300))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdvance(data) {
+      return data.keys().hasAll(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'advanceType', 'amount', 'paymentMode', 'whatsappShared', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeePhone', 'projectId', 'projectName', 'towerId', 'towerName', 'isSundayRun', 'advanceType', 'customCategory', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidDateStr(data.date)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.employeeName, 1, 100)
+        && (!('employeePhone' in data) || isValidString(data.employeePhone, 0, 24))
+        && (!('projectId' in data) || isValidString(data.projectId, 0, 128))
+        && (!('projectName' in data) || isValidString(data.projectName, 0, 120))
+        && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
+        && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
+        && (!('isSundayRun' in data) || data.isSundayRun is bool)
+        && data.advanceType in ['daily_food', 'weekly_food', 'cash_advance', 'custom']
+        && (!('customCategory' in data) || isValidString(data.customCategory, 0, 60))
+        && data.amount is number && data.amount > 0 && data.amount <= 1000000
+        && data.paymentMode in ['cash', 'upi', 'bank_transfer']
+        && (!('paymentApp' in data) || isValidString(data.paymentApp, 0, 40))
+        && (!('transactionId' in data) || isValidString(data.transactionId, 0, 100))
+        && (!('upiId' in data) || isValidString(data.upiId, 0, 120))
+        && (!('proofImageDataUrl' in data) || isValidString(data.proofImageDataUrl, 0, 240000))
+        && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && data.whatsappShared is bool
+        && (!('acknowledged' in data) || data.acknowledged is bool)
+        && (!('acknowledgedAt' in data) || isValidString(data.acknowledgedAt, 0, 40))
+        && (!('acknowledgedBy' in data) || isValidString(data.acknowledgedBy, 0, 100))
+        && (!('followUpSentAt' in data) || isValidString(data.followUpSentAt, 0, 40))
+        && (!('followUpCount' in data) || (data.followUpCount is number && data.followUpCount >= 0 && data.followUpCount <= 1000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSiteExpense(data) {
+      return data.keys().hasAll(['ownerId', 'date', 'projectId', 'projectName', 'category', 'description', 'amount', 'paymentMode', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidDateStr(data.date)
+        && isValidId(data.projectId)
+        && isValidString(data.projectName, 1, 120)
+        && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
+        && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
+        && data.category in ['food_mess', 'daily_expense', 'special_expense', 'gas_payment', 'medical', 'travel_advance', 'material', 'adhesive_grout', 'shifting_transport', 'tools_equipment', 'contractor_misc', 'custom']
+        && (!('customCategory' in data) || isValidString(data.customCategory, 0, 60))
+        && isValidString(data.description, 1, 160)
+        && (!('vendorName' in data) || isValidString(data.vendorName, 0, 100))
+        && data.amount is number && data.amount > 0 && data.amount <= 100000000
+        && data.paymentMode in ['cash', 'upi', 'bank_transfer']
+        && (!('paymentApp' in data) || isValidString(data.paymentApp, 0, 40))
+        && (!('transactionId' in data) || isValidString(data.transactionId, 0, 100))
+        && (!('upiId' in data) || isValidString(data.upiId, 0, 120))
+        && (!('proofImageDataUrl' in data) || isValidString(data.proofImageDataUrl, 0, 240000))
+        && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSettlement(data) {
+      return data.keys().hasAll(['ownerId', 'employeeId', 'empCode', 'employeeName', 'periodStart', 'periodEnd', 'daysWorked', 'grossWages', 'overtimePay', 'totalAdvances', 'netPaid', 'paymentMode', 'settledDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'employeeId', 'empCode', 'employeeName', 'periodStart', 'periodEnd', 'daysWorked', 'grossWages', 'overtimePay', 'totalAdvances', 'netPaid', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'settledDate', 'notes', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.employeeName, 1, 100)
+        && isValidDateStr(data.periodStart)
+        && isValidDateStr(data.periodEnd)
+        && data.daysWorked is number && data.daysWorked >= 0 && data.daysWorked <= 366
+        && data.grossWages is number && data.grossWages >= 0 && data.grossWages <= 10000000
+        && data.overtimePay is number && data.overtimePay >= 0 && data.overtimePay <= 10000000
+        && data.totalAdvances is number && data.totalAdvances >= 0 && data.totalAdvances <= 10000000
+        && data.netPaid is number && data.netPaid >= -10000000 && data.netPaid <= 10000000
+        && data.paymentMode in ['cash', 'upi', 'bank_transfer']
+        && (!('paymentApp' in data) || isValidString(data.paymentApp, 0, 40))
+        && (!('transactionId' in data) || isValidString(data.transactionId, 0, 100))
+        && (!('upiId' in data) || isValidString(data.upiId, 0, 120))
+        && (!('proofImageDataUrl' in data) || isValidString(data.proofImageDataUrl, 0, 240000))
+        && isValidDateStr(data.settledDate)
+        && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidQrPass(data) {
+      return data.keys().hasAll(['ownerId', 'employeeId', 'empCode', 'fullName', 'role', 'status', 'companyName', 'joiningDate', 'todayAttendanceStatus', 'todayAttendanceDate', 'completedZonesCount', 'activeAssignments', 'recentDeployments', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'employeeId', 'empCode', 'fullName', 'role', 'status', 'companyName', 'joiningDate', 'currentProjectName', 'currentTowerName', 'deployedSince', 'todayAttendanceStatus', 'todayAttendanceDate', 'completedZonesCount', 'activeAssignments', 'recentDeployments', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.fullName, 1, 100)
+        && data.role in ['Mason', 'Helper', 'Material Shifting', 'Supervisor', 'Engineer']
+        && data.status in ['active', 'inactive']
+        && isValidString(data.companyName, 1, 120)
+        && isValidDateStr(data.joiningDate)
+        && (!('currentProjectName' in data) || isValidString(data.currentProjectName, 0, 120))
+        && (!('currentTowerName' in data) || isValidString(data.currentTowerName, 0, 80))
+        && (!('deployedSince' in data) || isValidString(data.deployedSince, 0, 24))
+        && data.todayAttendanceStatus in ['present', 'half_day', 'absent', 'unmarked']
+        && isValidString(data.todayAttendanceDate, 0, 24)
+        && data.completedZonesCount is number && data.completedZonesCount >= 0 && data.completedZonesCount <= 100000
+        && data.activeAssignments is list && data.activeAssignments.size() <= 10 && (data.activeAssignments.size() == 0 || data.activeAssignments[0] is map)
+        && data.recentDeployments is list && data.recentDeployments.size() <= 5 && (data.recentDeployments.size() == 0 || data.recentDeployments[0] is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDailySiteLog(data) {
+      return data.keys().hasAll(['ownerId', 'date', 'projectId', 'projectName', 'towerId', 'towerName', 'notes', 'loggedByRole', 'loggedByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'projectId', 'projectName', 'towerId', 'towerName', 'notes', 'photoDataUrl', 'loggedByRole', 'loggedByName', 'loggedByEmployeeId', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidDateStr(data.date)
+        && isValidId(data.projectId)
+        && isValidString(data.projectName, 1, 120)
+        && isValidId(data.towerId)
+        && isValidString(data.towerName, 1, 80)
+        && isValidString(data.notes, 1, 600)
+        && (!('photoDataUrl' in data) || isValidString(data.photoDataUrl, 0, 240000))
+        && data.loggedByRole in ['admin', 'supervisor']
+        && isValidString(data.loggedByName, 1, 100)
+        && (!('loggedByEmployeeId' in data) || isValidString(data.loggedByEmployeeId, 0, 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBillingDocument(data) {
+      return data.keys().hasAll(['ownerId', 'docType', 'docNumber', 'issueDate', 'clientName', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'whatsappShared', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && data.docType in ['quotation', 'invoice', 'tax_invoice']
+        && isValidString(data.docNumber, 1, 48)
+        && isValidDateStr(data.issueDate)
+        && (!('dueDate' in data) || isValidString(data.dueDate, 0, 24))
+        && (!('projectId' in data) || isValidString(data.projectId, 0, 128))
+        && (!('projectName' in data) || isValidString(data.projectName, 0, 120))
+        && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
+        && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
+        && isValidString(data.clientName, 1, 140)
+        && (!('clientPhone' in data) || isValidString(data.clientPhone, 0, 24))
+        && (!('clientEmail' in data) || isValidString(data.clientEmail, 0, 120))
+        && (!('clientAddress' in data) || isValidString(data.clientAddress, 0, 300))
+        && (!('clientGstin' in data) || isValidString(data.clientGstin, 0, 32))
+        && (!('placeOfSupply' in data) || isValidString(data.placeOfSupply, 0, 80))
+        && data.taxMode in ['cgst_sgst', 'igst', 'none']
+        && data.items is list
+        && data.items.size() >= 1
+        && data.items.size() <= 50
+        && data.items[0] is map
+        && data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 1000000000
+        && data.cgstTotal is number && data.cgstTotal >= 0 && data.cgstTotal <= 1000000000
+        && data.sgstTotal is number && data.sgstTotal >= 0 && data.sgstTotal <= 1000000000
+        && data.igstTotal is number && data.igstTotal >= 0 && data.igstTotal <= 1000000000
+        && data.roundOff is number && data.roundOff >= -5 && data.roundOff <= 5
+        && data.grandTotal is number && data.grandTotal >= 0 && data.grandTotal <= 1000000000
+        && data.amountPaid is number && data.amountPaid >= 0 && data.amountPaid <= 1000000000
+        && data.status in ['draft', 'issued', 'sent', 'paid', 'cancelled']
+        && (!('notes' in data) || isValidString(data.notes, 0, 500))
+        && (!('terms' in data) || isValidString(data.terms, 0, 800))
+        && data.whatsappShared is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCompanyDocument(data) {
+      return data.keys().hasAll(['ownerId', 'source', 'docCategory', 'fileFormat', 'title', 'fileName', 'mimeType', 'sizeBytes', 'approvalStatus', 'issueDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'source', 'docCategory', 'fileFormat', 'title', 'fileName', 'mimeType', 'sizeBytes', 'approvalStatus', 'approvedByName', 'approvedAt', 'employeeId', 'empCode', 'employeeName', 'refNumber', 'issueDate', 'recipient', 'subject', 'bodyHtml', 'plainTextSummary', 'deckJson', 'dataUrl', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && data.source in ['smart_generator', 'word_letterhead', 'ppt_slides', 'uploaded']
+        && data.docCategory in ['employment_proof', 'payslip', 'joining_letter', 'relieving_letter', 'travel_security_letter', 'letterhead_doc', 'presentation_deck', 'uploaded_office']
+        && data.fileFormat in ['doc', 'docx', 'ppt', 'pptx', 'pdf', 'other']
+        && isValidString(data.title, 1, 160)
+        && isValidString(data.fileName, 1, 180)
+        && isValidString(data.mimeType, 1, 120)
+        && data.sizeBytes is number && data.sizeBytes >= 1 && data.sizeBytes <= 600000
+        && data.approvalStatus in ['draft', 'approved']
+        && (!('approvedByName' in data) || isValidString(data.approvedByName, 0, 100))
+        && (!('approvedAt' in data) || isValidString(data.approvedAt, 0, 40))
+        && (!('employeeId' in data) || isValidString(data.employeeId, 0, 128))
+        && (!('empCode' in data) || isValidString(data.empCode, 0, 32))
+        && (!('employeeName' in data) || isValidString(data.employeeName, 0, 100))
+        && (!('refNumber' in data) || isValidString(data.refNumber, 0, 80))
+        && isValidDateStr(data.issueDate)
+        && (!('recipient' in data) || isValidString(data.recipient, 0, 400))
+        && (!('subject' in data) || isValidString(data.subject, 0, 240))
+        && (!('bodyHtml' in data) || isValidString(data.bodyHtml, 0, 120000))
+        && (!('plainTextSummary' in data) || isValidString(data.plainTextSummary, 0, 20000))
+        && (!('deckJson' in data) || isValidString(data.deckJson, 0, 150000))
+        && (!('dataUrl' in data) || isValidString(data.dataUrl, 0, 750000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    match /company_profiles/{profileId} {
+      allow get: if isValidId(profileId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(profileId) && isValidCompanyProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(profileId) && isValidCompanyProfile(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'tileZoneCatalog', 'updatedAt']);
+      allow delete: if isValidId(profileId) && isOwnerResource();
+    }
+
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(projectId) && isValidProject(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(projectId) && isValidProject(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'updatedAt']);
+      allow delete: if isValidId(projectId) && isOwnerResource();
+    }
+
+    match /towers/{towerId} {
+      allow get: if isValidId(towerId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(towerId) && isValidTower(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('projects', incoming().projectId);
+      allow update: if isVerified() && isValidId(towerId) && isValidTower(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().projectId == existing().projectId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'totalFloors', 'unitsPerFloor', 'startDate', 'finishDate', 'inchargeName', 'inchargePhone', 'supervisorName', 'supervisorPhone', 'engineerName', 'engineerPhone', 'managerName', 'managerPhone', 'updatedAt']);
+      allow delete: if isValidId(towerId) && isOwnerResource();
+    }
+
+    match /flats/{flatId} {
+      allow get: if isValidId(flatId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(flatId) && isValidFlatUnit(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('projects', incoming().projectId)
+        && ownsDoc('towers', incoming().towerId);
+      allow update: if isVerified() && isValidId(flatId) && isValidFlatUnit(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().projectId == existing().projectId
+        && incoming().towerId == existing().towerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['zones', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['unitNumber', 'unitType', 'floorNumber', 'floorLabel', 'zones', 'updatedAt'])
+        );
+      allow delete: if isValidId(flatId) && isOwnerResource();
+    }
+
+    match /employees/{employeeId} {
+      allow get: if isValidId(employeeId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(employeeId) && isValidEmployee(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(employeeId) && isValidEmployee(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().empCode == existing().empCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['qrToken', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['assignedTowerIds', 'loginPin', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'loginPin', 'qrToken', 'status', 'notes', 'updatedAt'])
+        );
+      allow delete: if isValidId(employeeId) && isOwnerResource();
+    }
+
+    match /employee_docs/{docId} {
+      allow get: if isValidId(docId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(docId) && isValidEmployeeDocument(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if false;
+      allow delete: if isValidId(docId) && isOwnerResource();
+    }
+
+    match /deployments/{deploymentId} {
+      allow get: if isValidId(deploymentId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(deploymentId) && isValidDeployment(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId)
+        && ownsDoc('projects', incoming().projectId)
+        && ownsDoc('towers', incoming().towerId);
+      allow update: if false;
+      allow delete: if isValidId(deploymentId) && isOwnerResource();
+    }
+
+    match /assignments/{assignmentId} {
+      allow get: if isValidId(assignmentId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(assignmentId) && isValidWorkAssignment(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('projects', incoming().projectId)
+        && ownsDoc('towers', incoming().towerId)
+        && ownsDoc('flats', incoming().flatId)
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if isVerified() && isValidId(assignmentId) && isValidWorkAssignment(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedDate', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedDate', 'targetSqft', 'notes', 'updatedAt'])
+        );
+      allow delete: if isValidId(assignmentId) && isOwnerResource();
+    }
+
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(attendanceId) && isValidAttendance(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if isVerified() && isValidId(attendanceId) && isValidAttendance(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().employeeId == existing().employeeId
+        && incoming().date == existing().date
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'projectId', 'projectName', 'towerId', 'towerName', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'updatedAt']);
+      allow delete: if isValidId(attendanceId) && isOwnerResource();
+    }
+
+    match /advances/{advanceId} {
+      allow get: if isValidId(advanceId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(advanceId) && isValidAdvance(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if isVerified() && isValidId(advanceId) && isValidAdvance(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().employeeId == existing().employeeId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'notes', 'customCategory', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'updatedAt']);
+      allow delete: if isValidId(advanceId) && isOwnerResource();
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(expenseId) && isValidSiteExpense(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('projects', incoming().projectId);
+      allow update: if isVerified() && isValidId(expenseId) && isValidSiteExpense(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'updatedAt']);
+      allow delete: if isValidId(expenseId) && isOwnerResource();
+    }
+
+    match /settlements/{settlementId} {
+      allow get: if isValidId(settlementId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(settlementId) && isValidSettlement(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if false;
+      allow delete: if isValidId(settlementId) && isOwnerResource();
+    }
+
+    match /qr_passes/{passId} {
+      allow get: if isValidId(passId) && passId.size() >= 16;
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(passId) && passId.size() >= 16 && isValidQrPass(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('employees', incoming().employeeId);
+      allow update: if isVerified() && isValidId(passId) && passId.size() >= 16 && isValidQrPass(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().employeeId == existing().employeeId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['empCode', 'fullName', 'role', 'status', 'companyName', 'joiningDate', 'currentProjectName', 'currentTowerName', 'deployedSince', 'todayAttendanceStatus', 'todayAttendanceDate', 'completedZonesCount', 'activeAssignments', 'recentDeployments', 'updatedAt']);
+      allow delete: if isValidId(passId) && isOwnerResource();
+    }
+
+    match /site_logs/{logId} {
+      allow get: if isValidId(logId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(logId) && isValidDailySiteLog(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && ownsDoc('projects', incoming().projectId)
+        && ownsDoc('towers', incoming().towerId);
+      allow update: if isVerified() && isValidId(logId) && isValidDailySiteLog(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().projectId == existing().projectId
+        && incoming().towerId == existing().towerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'notes', 'photoDataUrl', 'updatedAt']);
+      allow delete: if isValidId(logId) && isOwnerResource();
+    }
+
+    match /billing_docs/{docId} {
+      allow get: if isValidId(docId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(docId) && isValidBillingDocument(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (!('projectId' in incoming()) || incoming().projectId == '' || ownsDoc('projects', incoming().projectId));
+      allow update: if isVerified() && isValidId(docId) && isValidBillingDocument(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'updatedAt']);
+      allow delete: if isValidId(docId) && isOwnerResource();
+    }
+
+    match /company_documents/{docId} {
+      allow get: if isValidId(docId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(docId) && isValidCompanyDocument(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (!('employeeId' in incoming()) || incoming().employeeId == '' || ownsDoc('employees', incoming().employeeId));
+      allow update: if isVerified() && isValidId(docId) && isValidCompanyDocument(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (!('employeeId' in incoming()) || incoming().employeeId == '' || ownsDoc('employees', incoming().employeeId))
+        && incoming().diff(existing()).affectedKeys().hasOnly(['source', 'docCategory', 'fileFormat', 'title', 'fileName', 'mimeType', 'sizeBytes', 'approvalStatus', 'approvedByName', 'approvedAt', 'employeeId', 'empCode', 'employeeName', 'refNumber', 'issueDate', 'recipient', 'subject', 'bodyHtml', 'plainTextSummary', 'deckJson', 'dataUrl', 'updatedAt']);
+      allow delete: if isValidId(docId) && isOwnerResource();
+    }
+  }
+}

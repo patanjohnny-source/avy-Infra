@@ -1,0 +1,514 @@
+{
+  "entities": {
+    "CompanyProfile": {
+      "title": "CompanyProfile",
+      "description": "Company branding, address, HR contact details, statutory IDs, assignment rules, and customizable tile-laying area catalog.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "companyName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tagline": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "address": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "hrContact": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "hrEmail": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "gstNumber": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "pfEstCode": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "esiCode": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "signatoryName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "logoDataUrl": { "type": "string", "minLength": 0, "maxLength": 120000 },
+        "requireFinishBeforeNewWork": { "type": "boolean" },
+        "adminUsername": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "adminPassword": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "adminEditPin": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "supervisorCanEditAttendance": { "type": "boolean" },
+        "customAdvanceCategories": { "type": "array", "description": "Reusable custom advance categories configured by admin." },
+        "customExpenseCategories": { "type": "array", "description": "Reusable custom site expense categories configured by admin." },
+        "weeklyExpenseBudget": { "type": "number", "description": "Weekly expense budget limit in INR used to trigger Dashboard Expense Burn Rate alerts." },
+        "idCardFrontBgDataUrl": { "type": "string", "minLength": 0, "maxLength": 120000 },
+        "idCardBackBgDataUrl": { "type": "string", "minLength": 0, "maxLength": 120000 },
+        "idCardBgColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "idCardHeaderColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "idCardAccentColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "idCardTextColor": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "idCardBgOpacity": { "type": "number" },
+        "tileZoneCatalog": { "type": "array", "description": "Customizable room and tile area definitions." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "companyName", "tileZoneCatalog", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A construction or residential tile-laying project with start/finish dates and engineer/manager contacts.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "location": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "clientName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "completed", "on_hold"] },
+        "startDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "finishDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "managerName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "managerPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "engineerName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "engineerPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "status", "createdAt", "updatedAt"]
+    },
+    "Tower": {
+      "title": "Tower",
+      "description": "A building tower inside a project containing floors, timeline dates, and tower incharge/supervisor/engineer/manager contacts.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "totalFloors": { "type": "number" },
+        "unitsPerFloor": { "type": "number" },
+        "startDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "finishDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "inchargeName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "inchargePhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "supervisorName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "supervisorPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "engineerName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "engineerPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "managerName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "managerPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "projectId", "name", "totalFloors", "unitsPerFloor", "createdAt", "updatedAt"]
+    },
+    "FlatUnit": {
+      "title": "FlatUnit",
+      "description": "An individual flat or level unit (Basement 1-3, Ground, Podium, 101-5002+) tracking customizable tile-laying areas.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "towerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "floorNumber": { "type": "number" },
+        "floorLabel": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "unitNumber": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "unitType": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "zones": { "type": "object", "description": "Map of customizable tile-laying work zones keyed by zoneKey." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "projectId", "towerId", "floorNumber", "unitNumber", "unitType", "zones", "createdAt", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "An AVY INFRA worker or staff member with photo, PF/ESI, Aadhar, blood group, contact numbers, and current project/tower assignment.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["Mason", "Helper", "Material Shifting", "Supervisor", "Engineer"] },
+        "phone": { "type": "string", "minLength": 7, "maxLength": 24 },
+        "alternatePhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "email": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "joiningDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "dailyRate": { "type": "number" },
+        "overtimeRate": { "type": "number" },
+        "foodAllowanceDaily": { "type": "number" },
+        "aadharRef": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "pfNumber": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "esiNumber": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "bloodGroup": { "type": "string", "minLength": 0, "maxLength": 12 },
+        "emergencyContact": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "photoDataUrl": { "type": "string", "minLength": 0, "maxLength": 120000 },
+        "currentProjectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "currentProjectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "currentTowerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "currentTowerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "assignedTowerIds": { "type": "array", "description": "Assigned tower IDs for supervisor login scope." },
+        "loginPin": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "qrToken": { "type": "string", "minLength": 0, "maxLength": 48 },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "empCode", "fullName", "role", "phone", "joiningDate", "dailyRate", "overtimeRate", "foodAllowanceDaily", "status", "createdAt", "updatedAt"]
+    },
+    "EmployeeDocument": {
+      "title": "EmployeeDocument",
+      "description": "Uploaded Aadhar PDF or other supporting employee document.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "docCategory": { "type": "string", "enum": ["aadhar_pdf", "other"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "sizeBytes": { "type": "number" },
+        "dataUrl": { "type": "string", "minLength": 1, "maxLength": 750000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "employeeId", "docCategory", "title", "fileName", "mimeType", "sizeBytes", "dataUrl", "createdAt", "updatedAt"]
+    },
+    "DeploymentRecord": {
+      "title": "DeploymentRecord",
+      "description": "Cross-project and cross-tower crew deployment and transfer log.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "employeeRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "towerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "fromProjectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "fromTowerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "assignedDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "employeeId", "empCode", "employeeName", "employeeRole", "projectId", "projectName", "towerId", "towerName", "assignedDate", "createdAt", "updatedAt"]
+    },
+    "WorkAssignment": {
+      "title": "WorkAssignment",
+      "description": "Historical and active record assigning an employee to a specific flat and tile-laying room/zone.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "towerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "flatId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "unitNumber": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "zoneKey": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "zoneLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "employeeRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "assignedDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "completedDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "targetSqft": { "type": "number" },
+        "status": { "type": "string", "enum": ["assigned", "prechecking", "in_progress", "completed", "cleaning_in_progress", "cleaning_done", "qc_approved"] },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "projectId", "towerId", "flatId", "unitNumber", "zoneKey", "zoneLabel", "employeeId", "empCode", "employeeName", "assignedDate", "status", "createdAt", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance status and wage computation per employee, project, and tower.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "employeeRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "projectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "projectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "status": { "type": "string", "enum": ["present", "half_day", "absent"] },
+        "overtimeHours": { "type": "number" },
+        "dailyWageEarned": { "type": "number" },
+        "overtimePayEarned": { "type": "number" },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "markedByRole": { "type": "string", "enum": ["admin", "supervisor"] },
+        "markedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "editedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "editedAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "editReason": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "employeeId", "empCode", "employeeName", "status", "overtimeHours", "dailyWageEarned", "overtimePayEarned", "createdAt", "updatedAt"]
+    },
+    "AdvanceEntry": {
+      "title": "AdvanceEntry",
+      "description": "Daily food advance, Sunday weekly food advance, or cash advance attributed to employee, project, and tower.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "employeePhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "projectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "isSundayRun": { "type": "boolean" },
+        "advanceType": { "type": "string", "enum": ["daily_food", "weekly_food", "cash_advance", "custom"] },
+        "customCategory": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "amount": { "type": "number" },
+        "paymentMode": { "type": "string", "enum": ["cash", "upi", "bank_transfer"] },
+        "paymentApp": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "transactionId": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "upiId": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "proofImageDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "whatsappShared": { "type": "boolean" },
+        "acknowledged": { "type": "boolean" },
+        "acknowledgedAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "acknowledgedBy": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "followUpSentAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "followUpCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "employeeId", "empCode", "employeeName", "advanceType", "amount", "paymentMode", "whatsappShared", "createdAt", "updatedAt"]
+    },
+    "SiteExpense": {
+      "title": "SiteExpense",
+      "description": "Project-wise and tower-wise operational expense entry (food/mess, gas, medical, travel advance, material, shifting, tools, custom).",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "category": { "type": "string", "enum": ["food_mess", "daily_expense", "special_expense", "gas_payment", "medical", "travel_advance", "material", "adhesive_grout", "shifting_transport", "tools_equipment", "contractor_misc", "custom"] },
+        "customCategory": { "type": "string", "minLength": 0, "maxLength": 60 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "vendorName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "amount": { "type": "number" },
+        "paymentMode": { "type": "string", "enum": ["cash", "upi", "bank_transfer"] },
+        "paymentApp": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "transactionId": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "upiId": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "proofImageDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "projectId", "projectName", "category", "description", "amount", "paymentMode", "createdAt", "updatedAt"]
+    },
+    "SettlementEntry": {
+      "title": "SettlementEntry",
+      "description": "Completed payroll payout settlement record for an employee.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "periodStart": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "periodEnd": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "daysWorked": { "type": "number" },
+        "grossWages": { "type": "number" },
+        "overtimePay": { "type": "number" },
+        "totalAdvances": { "type": "number" },
+        "netPaid": { "type": "number" },
+        "paymentMode": { "type": "string", "enum": ["cash", "upi", "bank_transfer"] },
+        "paymentApp": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "transactionId": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "upiId": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "proofImageDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "settledDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "employeeId", "empCode", "employeeName", "periodStart", "periodEnd", "daysWorked", "grossWages", "overtimePay", "totalAdvances", "netPaid", "paymentMode", "settledDate", "createdAt", "updatedAt"]
+    },
+    "QrPass": {
+      "title": "QrPass",
+      "description": "Non-PII read-only site verification snapshot for scanned employee QR codes showing site deployment and active work status.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["Mason", "Helper", "Material Shifting", "Supervisor", "Engineer"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "companyName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "joiningDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "currentProjectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "currentTowerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "deployedSince": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "todayAttendanceStatus": { "type": "string", "enum": ["present", "half_day", "absent", "unmarked"] },
+        "todayAttendanceDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "completedZonesCount": { "type": "number" },
+        "activeAssignments": { "type": "array", "description": "Up to 10 active flat/zone work assignments." },
+        "recentDeployments": { "type": "array", "description": "Up to 5 recent project/tower deployments." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "employeeId", "empCode", "fullName", "role", "status", "companyName", "joiningDate", "todayAttendanceStatus", "todayAttendanceDate", "completedZonesCount", "activeAssignments", "recentDeployments", "createdAt", "updatedAt"]
+    },
+    "DailySiteLog": {
+      "title": "DailySiteLog",
+      "description": "Daily tower-level progress note and optional site photo logged by supervisor or admin.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "towerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "notes": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "photoDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "loggedByRole": { "type": "string", "enum": ["admin", "supervisor"] },
+        "loggedByName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "loggedByEmployeeId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "projectId", "projectName", "towerId", "towerName", "notes", "loggedByRole", "loggedByName", "createdAt", "updatedAt"]
+    },
+    "BillingDocument": {
+      "title": "BillingDocument",
+      "description": "Saved Quotations, Invoices, and GST Tax Invoices with line items, GST breakup, project link, and payment status.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "docType": { "type": "string", "enum": ["quotation", "invoice", "tax_invoice"] },
+        "docNumber": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "issueDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "dueDate": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "projectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "projectName": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "clientName": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "clientPhone": { "type": "string", "minLength": 0, "maxLength": 24 },
+        "clientEmail": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "clientAddress": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "clientGstin": { "type": "string", "minLength": 0, "maxLength": 32 },
+        "placeOfSupply": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "taxMode": { "type": "string", "enum": ["cgst_sgst", "igst", "none"] },
+        "items": { "type": "array", "description": "Line items (1..50) with HSN/SAC, quantity, unit, rate, and GST." },
+        "subtotal": { "type": "number" },
+        "cgstTotal": { "type": "number" },
+        "sgstTotal": { "type": "number" },
+        "igstTotal": { "type": "number" },
+        "roundOff": { "type": "number" },
+        "grandTotal": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "issued", "sent", "paid", "cancelled"] },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "terms": { "type": "string", "minLength": 0, "maxLength": 800 },
+        "whatsappShared": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "docType", "docNumber", "issueDate", "clientName", "taxMode", "items", "subtotal", "cgstTotal", "sgstTotal", "igstTotal", "roundOff", "grandTotal", "amountPaid", "status", "whatsappShared", "createdAt", "updatedAt"]
+    },
+    "CompanyDocument": {
+      "title": "CompanyDocument",
+      "description": "Documents Drive repository item storing generated Word letterheads, PowerPoint decks, Smart Employee Letters, and uploaded Office/PDF files.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "source": { "type": "string", "enum": ["smart_generator", "word_letterhead", "ppt_slides", "uploaded"] },
+        "docCategory": { "type": "string", "enum": ["employment_proof", "payslip", "joining_letter", "relieving_letter", "travel_security_letter", "letterhead_doc", "presentation_deck", "uploaded_office"] },
+        "fileFormat": { "type": "string", "enum": ["doc", "docx", "ppt", "pptx", "pdf", "other"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "sizeBytes": { "type": "number" },
+        "approvalStatus": { "type": "string", "enum": ["draft", "approved"] },
+        "approvedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "approvedAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "employeeId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "empCode": { "type": "string", "minLength": 0, "maxLength": 32 },
+        "employeeName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "refNumber": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "issueDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "recipient": { "type": "string", "minLength": 0, "maxLength": 400 },
+        "subject": { "type": "string", "minLength": 0, "maxLength": 240 },
+        "bodyHtml": { "type": "string", "minLength": 0, "maxLength": 120000 },
+        "plainTextSummary": { "type": "string", "minLength": 0, "maxLength": 20000 },
+        "deckJson": { "type": "string", "minLength": 0, "maxLength": 150000 },
+        "dataUrl": { "type": "string", "minLength": 0, "maxLength": 750000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "source", "docCategory", "fileFormat", "title", "fileName", "mimeType", "sizeBytes", "approvalStatus", "issueDate", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/company_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/CompanyProfile" },
+      "description": "Company profile details, HR contacts, and customizable tile area catalog."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "Projects with timeline dates and manager/engineer contacts."
+    },
+    "/towers/{towerId}": {
+      "schema": { "$ref": "#/entities/Tower" },
+      "description": "Towers with timeline dates and tower incharge/supervisor/engineer/manager contacts."
+    },
+    "/flats/{flatId}": {
+      "schema": { "$ref": "#/entities/FlatUnit" },
+      "description": "Individual flats and special levels with customizable tile-laying area states."
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Employee master records with photo, PF/ESI, Aadhar, blood group, contacts, and site location."
+    },
+    "/employee_docs/{docId}": {
+      "schema": { "$ref": "#/entities/EmployeeDocument" },
+      "description": "Uploaded Aadhar PDF and supporting documents per employee."
+    },
+    "/deployments/{deploymentId}": {
+      "schema": { "$ref": "#/entities/DeploymentRecord" },
+      "description": "Cross-project and tower crew deployment history."
+    },
+    "/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/WorkAssignment" },
+      "description": "Flat & room tile-laying assignment history."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily attendance records per employee, project, and tower."
+    },
+    "/advances/{advanceId}": {
+      "schema": { "$ref": "#/entities/AdvanceEntry" },
+      "description": "Daily food, Sunday weekly food, and cash advance disbursements by project/tower."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/SiteExpense" },
+      "description": "Project-wise and tower-wise operational expenses."
+    },
+    "/settlements/{settlementId}": {
+      "schema": { "$ref": "#/entities/SettlementEntry" },
+      "description": "Payroll settlement history."
+    },
+    "/qr_passes/{passId}": {
+      "schema": { "$ref": "#/entities/QrPass" },
+      "description": "Publicly scannable non-PII workforce QR verification passes keyed by an unguessable pass token."
+    },
+    "/site_logs/{logId}": {
+      "schema": { "$ref": "#/entities/DailySiteLog" },
+      "description": "Daily tower progress logs and optional photo captures by supervisors and admin."
+    },
+    "/billing_docs/{docId}": {
+      "schema": { "$ref": "#/entities/BillingDocument" },
+      "description": "Saved Quotations, Invoices, and Project-wise GST Tax Invoices."
+    },
+    "/company_documents/{docId}": {
+      "schema": { "$ref": "#/entities/CompanyDocument" },
+      "description": "Documents Drive storing generated Smart Employee Letters, Word letterheads, PowerPoint decks, and uploaded Office/PDF files."
+    }
+  }
+}

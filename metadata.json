@@ -1,0 +1,8 @@
+{
+  "name": "Remix AVY INFRA — Tile Laying & Workforce Operations",
+  "description": "Tile laying project tracker, flat and room work matrix, workforce IDs, daily and weekly food advances, attendance register, payment ledger, and WhatsApp reporting for AVY INFRA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

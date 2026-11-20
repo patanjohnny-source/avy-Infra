@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AVY INFRA — Tile Laying & Workforce Operations</title>
+    <meta name="description" content="Tile laying project tracker, flat and room work matrix, workforce IDs, daily and weekly food advances, attendance register, payment ledger, and WhatsApp reporting for AVY INFRA." />
+    <meta property="og:title" content="AVY INFRA — Tile Laying & Workforce Operations" />
+    <meta property="og:description" content="Tile laying project tracker, flat and room work matrix, workforce IDs, daily and weekly food advances, attendance register, payment ledger, and WhatsApp reporting for AVY INFRA." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('avy_infra_theme');
+          if (saved === 'dark') {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.colorScheme = 'dark';
+            document.documentElement.setAttribute('data-theme', 'dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.style.colorScheme = 'light';
+            document.documentElement.setAttribute('data-theme', 'light');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-orange-100 selection:text-orange-900 dark:bg-[#060a12] dark:text-slate-100 dark:selection:bg-orange-900/60 dark:selection:text-orange-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
