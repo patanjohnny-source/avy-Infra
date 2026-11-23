@@ -14,11 +14,13 @@ import {
 } from 'lucide-react';
 import type { AttendanceRecord, AttendanceStatus, Employee, Project, Tower } from '../types/avy';
 import type { WorkspaceSession } from '../utils/authAccess';
+import { getCurrentHHMM, normalizeHHMM } from '../utils/operations';
 import {
   type QuickScanSessionItem,
   applyUndoScanToSession,
   getRecentLoggedScans,
   resolveQuickScanInput,
+  resolveSiteQrScanInput,
   validateQuickScanCandidate,
 } from '../utils/quickScanAttendance';
 
@@ -39,8 +41,17 @@ interface QuickScanAttendanceModalProps {
     projectId: string;
     towerId?: string;
     status: AttendanceStatus;
+    inTime?: string;
+    outTime?: string;
     overtimeHours: number;
     notes?: string;
+  }) => Promise<void>;
+  onPunchOut?: (input: {
+    attendanceId?: string;
+    employeeId?: string;
+    date: string;
+    outTime?: string;
+    overtimeHours?: number;
   }) => Promise<void>;
   onUndoAttendanceScan?: (date: string, employeeId: string) => Promise<void>;
 }
@@ -61,6 +72,7 @@ export function QuickScanAttendanceModal({
   defaultProjectId,
   defaultTowerId,
   onMarkAttendance,
+  onPunchOut,
   onUndoAttendanceScan,
 }: QuickScanAttendanceModalProps) {
   const [scanDate, setScanDate] = useState(defaultDate);
@@ -68,6 +80,9 @@ export function QuickScanAttendanceModal({
     defaultProjectId === 'all' ? projects[0]?.id || '' : defaultProjectId
   );
   const [scanTowerId, setScanTowerId] = useState(defaultTowerId);
+  const [scanMode, setScanMode] = useState<'check_in' | 'check_out'>('check_in');
+  const [scanInTime, setScanInTime] = useState(() => getCurrentHHMM());
+  const [scanOutTime, setScanOutTime] = useState(() => getCurrentHHMM());
   const [scanStatus, setScanStatus] = useState<AttendanceStatus>('present');
   const [scanOtHours, setScanOtHours] = useState('0');
   const [manualInput, setManualInput] = useState('');
@@ -117,9 +132,13 @@ export function QuickScanAttendanceModal({
       stopCamera();
       return;
     }
+    const nowHHMM = getCurrentHHMM();
     setScanDate(defaultDate);
     setScanProjectId(defaultProjectId === 'all' ? projects[0]?.id || '' : defaultProjectId);
     setScanTowerId(defaultTowerId || 'all');
+    setScanMode('check_in');
+    setScanInTime(nowHHMM);
+    setScanOutTime(nowHHMM);
     setScanStatus('present');
     setScanOtHours('0');
     setManualInput('');
@@ -172,12 +191,63 @@ export function QuickScanAttendanceModal({
       const cleaned = rawText.trim();
       if (!cleaned || busyScan) return;
 
-      const match = resolveQuickScanInput(cleaned, employees);
       const timeLabel = new Date().toLocaleTimeString('en-IN', {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
       });
+
+      const siteMatch = resolveSiteQrScanInput(cleaned, projects, towers);
+      if (siteMatch.ok && siteMatch.projectId) {
+        if (
+          session?.role === 'supervisor' &&
+          siteMatch.towerId &&
+          !session.assignedTowerIds.includes(siteMatch.towerId)
+        ) {
+          const warnMsg = `Site QR belongs to ${siteMatch.projectName}${
+            siteMatch.towerName ? ` · ${siteMatch.towerName}` : ''
+          }, which is outside your assigned tower scope.`;
+          setBannerStatus({ tone: 'warn', text: warnMsg });
+          setSessionLogs((prev) => [
+            {
+              id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+              timestamp: timeLabel,
+              scanDate,
+              rawInput: cleaned,
+              employeeName: siteMatch.projectName || 'Site QR',
+              status: scanStatus,
+              outcome: 'blocked',
+              message: warnMsg,
+            },
+            ...prev,
+          ]);
+          return;
+        }
+
+        setScanProjectId(siteMatch.projectId);
+        setScanTowerId(siteMatch.towerId || 'all');
+        const siteLabel = `${siteMatch.projectName}${
+          siteMatch.towerName ? ` · ${siteMatch.towerName}` : ''
+        }`;
+        const okSiteMsg = `Switched active site to ${siteLabel} (${siteMatch.checkpointLabel || 'Site QR'}) — scan worker IDs now.`;
+        setBannerStatus({ tone: 'ok', text: okSiteMsg });
+        setSessionLogs((prev) => [
+          {
+            id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            timestamp: timeLabel,
+            scanDate,
+            rawInput: cleaned,
+            employeeName: `SITE QR · ${siteLabel}`,
+            status: scanStatus,
+            outcome: 'logged',
+            message: okSiteMsg,
+          },
+          ...prev,
+        ]);
+        return;
+      }
+
+      const match = resolveQuickScanInput(cleaned, employees);
 
       if (!match.ok || !match.employee) {
         const msg = match.reason || `No worker matched "${cleaned.slice(0, 40)}".`;
@@ -206,11 +276,14 @@ export function QuickScanAttendanceModal({
         session,
         existingAttendance: attendance,
         sessionLoggedIds: scannedIdsRef.current,
+        mode: scanMode,
       });
 
       if (!check.canLog) {
         const isDup =
-          check.issue === 'duplicate_in_session' || check.issue === 'already_marked_today';
+          check.issue === 'duplicate_in_session' ||
+          check.issue === 'already_marked_today' ||
+          check.issue === 'already_checked_out';
         const reasonMsg = check.message || 'Scan blocked by attendance rules.';
         setBannerStatus({ tone: isDup ? 'warn' : 'err', text: reasonMsg });
         setSessionLogs((prev) => [
@@ -223,7 +296,8 @@ export function QuickScanAttendanceModal({
             empCode: emp.empCode,
             employeeName: emp.fullName,
             role: emp.role,
-            status: scanStatus,
+            status: check.existingRecord?.status || scanStatus,
+            mode: scanMode,
             outcome: isDup ? 'duplicate' : 'blocked',
             message: reasonMsg,
           },
@@ -234,48 +308,111 @@ export function QuickScanAttendanceModal({
 
       setBusyScan(true);
       try {
-        const resolvedProjId = scanProjectId || emp.currentProjectId || projects[0]?.id || '';
-        const resolvedTwrId =
-          scanTowerId && scanTowerId !== 'all' ? scanTowerId : emp.currentTowerId || undefined;
         const ot = scanStatus === 'absent' ? 0 : Math.max(0, Math.min(16, Number(scanOtHours) || 0));
 
-        await onMarkAttendance({
-          date: scanDate,
-          employeeId: emp.id,
-          projectId: resolvedProjId,
-          towerId: resolvedTwrId,
-          status: scanStatus,
-          overtimeHours: ot,
-          notes: 'Quick Scan Attendance Session',
-        });
+        if (scanMode === 'check_out') {
+          const outT = normalizeHHMM(scanOutTime) || getCurrentHHMM();
+          if (onPunchOut) {
+            await onPunchOut({
+              attendanceId: check.existingRecord?.id,
+              employeeId: emp.id,
+              date: scanDate,
+              outTime: outT,
+              overtimeHours: ot > 0 ? ot : undefined,
+            });
+          } else {
+            await onMarkAttendance({
+              date: scanDate,
+              employeeId: emp.id,
+              projectId:
+                check.existingRecord?.projectId ||
+                scanProjectId ||
+                emp.currentProjectId ||
+                projects[0]?.id ||
+                '',
+              towerId: check.existingRecord?.towerId || emp.currentTowerId || undefined,
+              status: check.existingRecord?.status || 'present',
+              inTime: check.existingRecord?.inTime,
+              outTime: outT,
+              overtimeHours: ot > 0 ? ot : check.existingRecord?.overtimeHours || 0,
+              notes: check.existingRecord?.notes || 'Quick Scan Check-Out',
+            });
+          }
 
-        scannedIdsRef.current.add(emp.id);
-        setScannedEmployeeIds((prev) => (prev.includes(emp.id) ? prev : [...prev, emp.id]));
-        const statusText =
-          scanStatus === 'present'
-            ? 'Present'
-            : scanStatus === 'half_day'
-              ? 'Half Day'
-              : 'Absent';
-        const okMsg = `Logged ${statusText}${ot > 0 ? ` + ${ot}h OT` : ''} for ${emp.empCode} ${emp.fullName}`;
-        setBannerStatus({ tone: 'ok', text: okMsg });
-        setSessionLogs((prev) => [
-          {
-            id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
-            timestamp: timeLabel,
-            scanDate,
-            rawInput: cleaned,
+          scannedIdsRef.current.add(emp.id);
+          setScannedEmployeeIds((prev) => (prev.includes(emp.id) ? prev : [...prev, emp.id]));
+          const okMsg = `Checked Out at ${outT} for ${emp.empCode} ${emp.fullName}`;
+          setBannerStatus({ tone: 'ok', text: okMsg });
+          setSessionLogs((prev) => [
+            {
+              id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+              timestamp: timeLabel,
+              scanDate,
+              rawInput: cleaned,
+              employeeId: emp.id,
+              empCode: emp.empCode,
+              employeeName: emp.fullName,
+              role: emp.role,
+              status: check.existingRecord?.status || 'present',
+              inTime: check.existingRecord?.inTime,
+              outTime: outT,
+              mode: 'check_out',
+              overtimeHours: ot > 0 ? ot : check.existingRecord?.overtimeHours,
+              outcome: 'logged',
+              message: okMsg,
+            },
+            ...prev,
+          ]);
+        } else {
+          const resolvedProjId = scanProjectId || emp.currentProjectId || projects[0]?.id || '';
+          const resolvedTwrId =
+            scanTowerId && scanTowerId !== 'all' ? scanTowerId : emp.currentTowerId || undefined;
+          const inT =
+            scanStatus === 'absent' ? undefined : normalizeHHMM(scanInTime) || getCurrentHHMM();
+
+          await onMarkAttendance({
+            date: scanDate,
             employeeId: emp.id,
-            empCode: emp.empCode,
-            employeeName: emp.fullName,
-            role: emp.role,
+            projectId: resolvedProjId,
+            towerId: resolvedTwrId,
             status: scanStatus,
+            inTime: inT,
             overtimeHours: ot,
-            outcome: 'logged',
-            message: okMsg,
-          },
-          ...prev,
-        ]);
+            notes: 'Quick Scan Attendance Session',
+          });
+
+          scannedIdsRef.current.add(emp.id);
+          setScannedEmployeeIds((prev) => (prev.includes(emp.id) ? prev : [...prev, emp.id]));
+          const statusText =
+            scanStatus === 'present'
+              ? 'Present'
+              : scanStatus === 'half_day'
+                ? 'Half Day'
+                : 'Absent';
+          const okMsg = `Checked In (${statusText}${inT ? ` at ${inT}` : ''}${
+            ot > 0 ? ` + ${ot}h OT` : ''
+          }) for ${emp.empCode} ${emp.fullName}`;
+          setBannerStatus({ tone: 'ok', text: okMsg });
+          setSessionLogs((prev) => [
+            {
+              id: `scan_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+              timestamp: timeLabel,
+              scanDate,
+              rawInput: cleaned,
+              employeeId: emp.id,
+              empCode: emp.empCode,
+              employeeName: emp.fullName,
+              role: emp.role,
+              status: scanStatus,
+              inTime: inT,
+              mode: 'check_in',
+              overtimeHours: ot,
+              outcome: 'logged',
+              message: okMsg,
+            },
+            ...prev,
+          ]);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unable to save attendance record.';
         setBannerStatus({ tone: 'err', text: msg });
@@ -290,6 +427,7 @@ export function QuickScanAttendanceModal({
             employeeName: emp.fullName,
             role: emp.role,
             status: scanStatus,
+            mode: scanMode,
             outcome: 'blocked',
             message: msg,
           },
@@ -305,12 +443,17 @@ export function QuickScanAttendanceModal({
       scanDate,
       scanProjectId,
       scanTowerId,
+      scanMode,
+      scanInTime,
+      scanOutTime,
       scanStatus,
       scanOtHours,
       projects,
+      towers,
       session,
       attendance,
       onMarkAttendance,
+      onPunchOut,
     ]
   );
 
@@ -483,99 +626,169 @@ export function QuickScanAttendanceModal({
         </header>
 
         {/* Session Controls Strip */}
-        <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 shrink-0 text-xs">
-          <div>
-            <label htmlFor="qs-date" className="block text-[11px] font-medium text-slate-600 mb-1">
-              Attendance Date
-            </label>
-            <input
-              id="qs-date"
-              type="date"
-              value={scanDate}
-              onChange={(e) => setScanDate(e.target.value)}
-              className="w-full px-2.5 py-1.5 font-mono bg-white border border-slate-300 rounded"
-            />
-          </div>
-          <div>
-            <label htmlFor="qs-project" className="block text-[11px] font-medium text-slate-600 mb-1">
-              Project
-            </label>
-            <select
-              id="qs-project"
-              value={scanProjectId}
-              onChange={(e) => {
-                setScanProjectId(e.target.value);
-                setScanTowerId('all');
-              }}
-              className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded"
-            >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="qs-tower" className="block text-[11px] font-medium text-slate-600 mb-1">
-              Tower Override
-            </label>
-            <select
-              id="qs-tower"
-              value={scanTowerId}
-              onChange={(e) => setScanTowerId(e.target.value)}
-              className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded"
-            >
-              <option value="all">Worker&apos;s Assigned Tower</option>
-              {availableTowers.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <span className="block text-[11px] font-medium text-slate-600 mb-1">
-              Mark On Scan As
-            </span>
-            <div className="grid grid-cols-3 gap-1">
-              {(
-                [
-                  { id: 'present', label: 'Present', cls: 'bg-emerald-700 text-white border-emerald-700' },
-                  { id: 'half_day', label: 'Half', cls: 'bg-amber-600 text-white border-amber-600' },
-                  { id: 'absent', label: 'Absent', cls: 'bg-red-700 text-white border-red-700' },
-                ] as const
-              ).map((st) => (
-                <button
-                  key={st.id}
-                  type="button"
-                  onClick={() => setScanStatus(st.id)}
-                  className={`py-1.5 text-[11px] font-semibold rounded border ${
-                    scanStatus === st.id
-                      ? st.cls
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                  }`}
-                >
-                  {st.label}
-                </button>
-              ))}
+        <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 space-y-2.5 shrink-0 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5 bg-white p-1 border border-slate-300 rounded-md">
+              <button
+                type="button"
+                onClick={() => {
+                  setScanMode('check_in');
+                  setScannedEmployeeIds([]);
+                  scannedIdsRef.current = new Set();
+                  setScanInTime(getCurrentHHMM());
+                }}
+                className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                  scanMode === 'check_in'
+                    ? 'bg-emerald-700 text-white'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                Check-In Punch
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setScanMode('check_out');
+                  setScannedEmployeeIds([]);
+                  scannedIdsRef.current = new Set();
+                  setScanOutTime(getCurrentHHMM());
+                }}
+                className={`px-3 py-1 text-xs font-semibold rounded transition-colors ${
+                  scanMode === 'check_out'
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                Check-Out Punch
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {scanMode === 'check_in' ? (
+                <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-700">
+                  <span>In Time:</span>
+                  <input
+                    id="qs-in-time"
+                    type="time"
+                    value={scanInTime}
+                    onChange={(e) => setScanInTime(e.target.value)}
+                    className="px-2 py-1 font-mono bg-white border border-slate-300 rounded"
+                  />
+                </label>
+              ) : (
+                <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-700">
+                  <span>Out Time:</span>
+                  <input
+                    id="qs-out-time"
+                    type="time"
+                    value={scanOutTime}
+                    onChange={(e) => setScanOutTime(e.target.value)}
+                    className="px-2 py-1 font-mono bg-white border border-slate-300 rounded"
+                  />
+                </label>
+              )}
             </div>
           </div>
-          <div>
-            <label htmlFor="qs-ot" className="block text-[11px] font-medium text-slate-600 mb-1">
-              Default OT Hours
-            </label>
-            <input
-              id="qs-ot"
-              type="number"
-              min="0"
-              max="16"
-              step="0.5"
-              disabled={scanStatus === 'absent'}
-              value={scanOtHours}
-              onChange={(e) => setScanOtHours(e.target.value)}
-              className="w-full px-2.5 py-1.5 font-mono bg-white border border-slate-300 rounded disabled:bg-slate-100"
-            />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            <div>
+              <label htmlFor="qs-date" className="block text-[11px] font-medium text-slate-600 mb-1">
+                Attendance Date
+              </label>
+              <input
+                id="qs-date"
+                type="date"
+                value={scanDate}
+                onChange={(e) => setScanDate(e.target.value)}
+                className="w-full px-2.5 py-1.5 font-mono bg-white border border-slate-300 rounded"
+              />
+            </div>
+            <div>
+              <label htmlFor="qs-project" className="block text-[11px] font-medium text-slate-600 mb-1">
+                Project
+              </label>
+              <select
+                id="qs-project"
+                value={scanProjectId}
+                onChange={(e) => {
+                  setScanProjectId(e.target.value);
+                  setScanTowerId('all');
+                }}
+                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="qs-tower" className="block text-[11px] font-medium text-slate-600 mb-1">
+                Tower Override
+              </label>
+              <select
+                id="qs-tower"
+                value={scanTowerId}
+                onChange={(e) => setScanTowerId(e.target.value)}
+                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded"
+              >
+                <option value="all">Worker&apos;s Assigned Tower</option>
+                {availableTowers.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <span className="block text-[11px] font-medium text-slate-600 mb-1">
+                {scanMode === 'check_out' ? 'Check-Out Mode' : 'Mark On Scan As'}
+              </span>
+              {scanMode === 'check_out' ? (
+                <div className="px-2.5 py-1.5 bg-slate-200/70 text-slate-700 font-medium rounded border border-slate-300 text-[11px]">
+                  Stamps Out Time
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      { id: 'present', label: 'Present', cls: 'bg-emerald-700 text-white border-emerald-700' },
+                      { id: 'half_day', label: 'Half', cls: 'bg-amber-600 text-white border-amber-600' },
+                      { id: 'absent', label: 'Absent', cls: 'bg-red-700 text-white border-red-700' },
+                    ] as const
+                  ).map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setScanStatus(st.id)}
+                      className={`py-1.5 text-[11px] font-semibold rounded border ${
+                        scanStatus === st.id
+                          ? st.cls
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <label htmlFor="qs-ot" className="block text-[11px] font-medium text-slate-600 mb-1">
+                {scanMode === 'check_out' ? 'Update OT Hours (Opt)' : 'Default OT Hours'}
+              </label>
+              <input
+                id="qs-ot"
+                type="number"
+                min="0"
+                max="16"
+                step="0.5"
+                disabled={scanMode === 'check_in' && scanStatus === 'absent'}
+                value={scanOtHours}
+                onChange={(e) => setScanOtHours(e.target.value)}
+                className="w-full px-2.5 py-1.5 font-mono bg-white border border-slate-300 rounded disabled:bg-slate-100"
+              />
+            </div>
           </div>
         </div>
 
@@ -742,14 +955,44 @@ export function QuickScanAttendanceModal({
                         <span className="font-mono font-semibold text-slate-900">{emp.empCode}</span>{' '}
                         <span className="font-medium text-slate-800">{emp.fullName}</span>
                         <span className="text-[11px] text-slate-500"> · {emp.role}</span>
+                        {rec?.inTime && (
+                          <span className="ml-1.5 text-[10px] font-mono text-slate-500">
+                            ({rec.inTime}{rec.outTime ? `–${rec.outTime}` : ''})
+                          </span>
+                        )}
                       </div>
-                      {rec || scannedNow ? (
+                      {scanMode === 'check_out' ? (
+                        !rec ? (
+                          <span className="px-2 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-500 rounded shrink-0">
+                            Not Checked In
+                          </span>
+                        ) : rec.status === 'absent' ? (
+                          <span className="px-2 py-0.5 text-[10px] font-medium bg-red-50 text-red-700 rounded shrink-0">
+                            Absent
+                          </span>
+                        ) : rec.outTime || scannedNow ? (
+                          <span className="px-2 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded shrink-0">
+                            Out {rec.outTime || scanOutTime}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => processScanInput(emp.empCode)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-900 bg-amber-100 border border-amber-300 rounded hover:bg-amber-200 shrink-0"
+                          >
+                            <UserCheck className="w-3 h-3" aria-hidden="true" />
+                            <span>Check Out</span>
+                          </button>
+                        )
+                      ) : rec || scannedNow ? (
                         <span className="px-2 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded shrink-0">
                           {rec?.status === 'half_day'
                             ? 'Half Day'
                             : rec?.status === 'absent'
                               ? 'Absent'
-                              : 'Marked'}
+                              : rec?.inTime
+                                ? `In ${rec.inTime}`
+                                : 'Marked'}
                         </span>
                       ) : (
                         <button
@@ -758,7 +1001,7 @@ export function QuickScanAttendanceModal({
                           className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-orange-800 bg-orange-50 border border-orange-200 rounded hover:bg-orange-100 shrink-0"
                         >
                           <UserCheck className="w-3 h-3" aria-hidden="true" />
-                          <span>Scan / Mark</span>
+                          <span>Check In</span>
                         </button>
                       )}
                     </div>
@@ -836,7 +1079,8 @@ export function QuickScanAttendanceModal({
                           </div>
                           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
                             <span className="font-medium text-emerald-700">
-                              {statusLabel}
+                              {item.mode === 'check_out' ? `Check-Out ${item.outTime || ''}` : statusLabel}
+                              {item.mode !== 'check_out' && item.inTime ? ` · In ${item.inTime}` : ''}
                               {item.overtimeHours && item.overtimeHours > 0
                                 ? ` + ${item.overtimeHours}h OT`
                                 : ''}

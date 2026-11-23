@@ -4,7 +4,9 @@ import {
   ArrowRight,
   BellRing,
   Building2,
+  CheckCircle2,
   ClipboardList,
+  Mail,
   MessageSquare,
   Phone,
   ReceiptIndianRupee,
@@ -12,20 +14,37 @@ import {
   SlidersHorizontal,
   Users,
   Wallet,
+  Wrench,
   X,
+  XCircle,
 } from 'lucide-react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  LabelList,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { useStore } from '../context/StoreContext';
+import { useTheme } from '../context/ThemeContext';
 import { getTodayIso } from '../data/seedData';
 import type { WhatsappMessagePayload } from '../types/avy';
 import {
   DEFAULT_WEEKLY_EXPENSE_BUDGET,
   computeExecutiveSummaryMetrics,
+  computeOverviewKpis,
   computeProjectAndTowerExpenses,
+  computeProjectCompletionSeries,
   computeTowerAttendanceSummary,
   computeTowerFoodExpenseBreakdown,
   formatBurnAlertWhatsappMessage,
   formatDurationBreakdown,
   formatTowerProjectStatusWhatsappMessage,
+  summarizeSupervisorToolSpends,
 } from '../utils/operations';
 import {
   computeEmployeePayroll,
@@ -35,6 +54,7 @@ import {
 } from '../utils/payroll';
 import {
   calculateFlatProgress,
+  collectOpenZoneIssuesForFlats,
   getWorkStatusBadgeClass,
   getWorkStatusLabel,
 } from '../utils/tileZones';
@@ -49,7 +69,14 @@ import {
   getScopedTowers,
   isSupervisorSession,
 } from '../utils/authAccess';
+import {
+  buildWeeklyFoodDecisionWhatsappMessage,
+  buildWhatsappDirectUrl,
+  groupWeeklyFoodApprovalBatches,
+  resolveAdminApprovalContact,
+} from '../utils/weeklyFoodApproval';
 import { ExecutiveSummarySection } from './ExecutiveSummarySection';
+import { WeeklySiteEmailModal } from './WeeklySiteEmailModal';
 
 export type AppSection =
   | 'overview'
@@ -58,6 +85,7 @@ export type AppSection =
   | 'payroll'
   | 'expenses'
   | 'sitelogs'
+  | 'messenger'
   | 'billing'
   | 'documents';
 
@@ -89,7 +117,11 @@ export function DashboardView({
     expenses: allExpenses,
     settlements,
     dailySiteLogs: allDailySiteLogs,
+    reviewWeeklyFoodApproval,
+    rectifyFlatZoneIssue,
+    reviewSupervisorExpense,
   } = useStore();
+  const { isDark } = useTheme();
 
   const isSupervisor = isSupervisorSession(session);
   const towers = getScopedTowers(session, allTowers);
@@ -171,6 +203,56 @@ export function DashboardView({
       weeklyExpenseBudget,
     ]
   );
+
+  const [showWeeklyEmailModal, setShowWeeklyEmailModal] = useState(false);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+
+  const overviewKpis = useMemo(
+    () =>
+      computeOverviewKpis({
+        projects,
+        employees,
+        attendance,
+        advances,
+        date: today,
+      }),
+    [projects, employees, attendance, advances, today]
+  );
+
+  const completionSeries = useMemo(
+    () =>
+      computeProjectCompletionSeries({
+        projects,
+        towers,
+        flats,
+        tileZoneCatalog: zoneCatalog,
+        onlyActive: true,
+      }),
+    [projects, towers, flats, zoneCatalog]
+  );
+
+  const pendingFoodBatches = useMemo(
+    () => groupWeeklyFoodApprovalBatches(allAdvances, 'pending_admin'),
+    [allAdvances]
+  );
+
+  const openZoneIssues = useMemo(
+    () =>
+      collectOpenZoneIssuesForFlats({
+        flats,
+        projects,
+        towers,
+        tileZoneCatalog: zoneCatalog,
+      }),
+    [flats, projects, towers, zoneCatalog]
+  );
+
+  const supervisorToolSummary = useMemo(
+    () => summarizeSupervisorToolSpends(allExpenses),
+    [allExpenses]
+  );
+  const [rectifyingZoneKey, setRectifyingZoneKey] = useState<string | null>(null);
+  const [reviewingExpId, setReviewingExpId] = useState<string | null>(null);
 
   const [dismissedAlertKey, setDismissedAlertKey] = useState<string | null>(null);
   const burnAlertKey = `${execMetrics.burnBudgetStatus}:${execMetrics.dailyBurnRate}:${execMetrics.weeklyExpenseBudget}:${execMetrics.currentWeekSpend}`;
@@ -329,6 +411,17 @@ export function DashboardView({
               <span>1 Burn Alert Active</span>
             </button>
           )}
+          {!isSupervisor && (
+            <button
+              type="button"
+              data-testid="dashboard-weekly-email-btn"
+              onClick={() => setShowWeeklyEmailModal(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap"
+            >
+              <Mail className="w-4 h-4 text-orange-700" aria-hidden="true" />
+              <span>Weekly Site Email</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onNavigate('sitelogs')}
@@ -479,6 +572,491 @@ export function DashboardView({
         </div>
       )}
 
+      {/* Key Performance Indicators (Store-Driven Top KPI Cards) */}
+      <section aria-labelledby="kpi-section-title" data-testid="overview-kpi-section" className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="kpi-section-title" className="text-base font-semibold text-slate-900">
+            Key Performance Indicators
+          </h2>
+          <span className="text-xs font-mono tabular-nums text-slate-500">
+            Live Operations · {today}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span>Active Projects</span>
+              <Building2 className="w-4 h-4 text-orange-700" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-semibold font-mono tabular-nums text-slate-900">
+              {overviewKpis.activeProjectsCount}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {overviewKpis.totalProjectsCount} total sites · {towers.length} towers
+            </p>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span>Total Workforce</span>
+              <Users className="w-4 h-4 text-orange-700" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-semibold font-mono tabular-nums text-slate-900">
+              {overviewKpis.activeWorkforceCount}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {overviewKpis.totalWorkforceCount} registered crew on roster
+            </p>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span>Today&apos;s Attendance Percentage</span>
+              <ClipboardList className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-semibold font-mono tabular-nums text-slate-900">
+              {overviewKpis.todayAttendancePct}%
+            </div>
+            <p className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
+              {overviewKpis.todayAttendedCount} / {overviewKpis.todayEligibleCount} marked on {today}
+            </p>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+              <span>Pending Food Advances</span>
+              <Wallet className="w-4 h-4 text-amber-700" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-semibold font-mono tabular-nums text-slate-900">
+              {formatINR(overviewKpis.pendingFoodAdvancesAmount)}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {overviewKpis.pendingFoodAdvancesCount} entr
+              {overviewKpis.pendingFoodAdvancesCount === 1 ? 'y' : 'ies'} ({overviewKpis.pendingApprovalFoodCount}{' '}
+              pending admin approval)
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Active Project Completion Bar Chart (Recharts) */}
+      <section
+        data-testid="project-completion-recharts-section"
+        className="bg-white border border-slate-200 rounded-lg p-5 sm:p-6 space-y-4"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Project Completion Status
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Percentage of tile laying &amp; room zones completed across active project sites
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 inline-block" aria-hidden="true" />
+              <span>75%+ On Track</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-amber-600 inline-block" aria-hidden="true" />
+              <span>35–74% In Progress</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm bg-red-600 inline-block" aria-hidden="true" />
+              <span>&lt;35% Early Stage</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigate('projects')}
+              className="inline-flex items-center gap-1 text-xs font-medium text-orange-700 hover:text-orange-800 whitespace-nowrap"
+            >
+              <span>Inspect Flat Matrix</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        {completionSeries.length === 0 ? (
+          <p className="py-8 text-sm text-center text-slate-500">
+            No active project sites available to chart.
+          </p>
+        ) : (
+          <div className="h-[260px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={completionSeries}
+                margin={{ top: 24, right: 20, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  vertical={false}
+                  stroke={isDark ? '#334155' : '#e2e8f0'}
+                />
+                <XAxis
+                  dataKey="shortName"
+                  tick={{ fill: isDark ? '#cbd5e1' : '#475569', fontSize: 12 }}
+                  axisLine={{ stroke: isDark ? '#475569' : '#cbd5e1' }}
+                  tickLine={false}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  unit="%"
+                  tick={{ fill: isDark ? '#cbd5e1' : '#475569', fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={44}
+                />
+                <Tooltip
+                  cursor={{ fill: isDark ? 'rgba(148,163,184,0.1)' : 'rgba(241,245,249,0.75)' }}
+                  contentStyle={{
+                    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+                    borderColor: isDark ? '#334155' : '#e2e8f0',
+                    borderRadius: '0.5rem',
+                    fontSize: '12px',
+                    color: isDark ? '#f8fafc' : '#0f172a',
+                  }}
+                  formatter={(value) => [`${Number(value) || 0}%`, 'Tile Zones Complete']}
+                  labelFormatter={(_, payload) => {
+                    const row = payload?.[0]?.payload;
+                    return row
+                      ? `${row.projectName} — ${row.completedZones}/${row.totalZones} zones (${row.completedFlats}/${row.totalFlats} flats)`
+                      : '';
+                  }}
+                />
+                <Bar
+                  dataKey="completionPct"
+                  isAnimationActive={false}
+                  radius={[4, 4, 0, 0]}
+                  maxBarSize={56}
+                >
+                  <LabelList
+                    dataKey="completionPct"
+                    position="top"
+                    formatter={(val) => `${Number(val ?? 0)}%`}
+                    fill={isDark ? '#cbd5e1' : '#334155'}
+                    fontSize={12}
+                    fontWeight={600}
+                  />
+                  {completionSeries.map((entry) => (
+                    <Cell key={entry.projectId} fill={entry.colorHex} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
+
+      {/* Admin Weekly Food Run Approval Queue */}
+      {!isSupervisor && pendingFoodBatches.length > 0 && (
+        <section
+          data-testid="admin-pending-food-approvals"
+          className="bg-white border border-amber-300 rounded-lg p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">
+                Pending Weekly Food Run Approvals ({pendingFoodBatches.length})
+              </h2>
+              <p className="text-xs text-slate-500">
+                Submitted by site supervisors for Admin approval and simultaneous WhatsApp confirmation.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('payroll')}
+              className="text-xs font-medium text-orange-700 hover:text-orange-800 whitespace-nowrap"
+            >
+              Open Food Advances Tab
+            </button>
+          </div>
+
+          <div className="space-y-2.5">
+            {pendingFoodBatches.map((batch) => {
+              const adminContact = resolveAdminApprovalContact(companyProfile);
+              const supervisorPhone =
+                employees.find((e) => e.fullName === batch.submittedByName)?.phone ||
+                adminContact.adminPhone;
+              const approveWaUrl = buildWhatsappDirectUrl(
+                supervisorPhone,
+                buildWeeklyFoodDecisionWhatsappMessage({
+                  companyName,
+                  decision: 'approved',
+                  batch,
+                  reviewedByName: session?.displayName || adminContact.adminName,
+                })
+              );
+              const busy = approvalBusyId === batch.batchId;
+
+              return (
+                <div
+                  key={batch.batchId}
+                  className="p-3.5 bg-amber-50/60 border border-amber-200 rounded-md flex flex-col md:flex-row md:items-center justify-between gap-3"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                      <span>{batch.projectName}</span>
+                      <span className="text-slate-400">·</span>
+                      <span>{batch.towerName}</span>
+                      <span className="px-2 py-0.5 text-[11px] font-mono bg-white border border-amber-300 rounded text-amber-900">
+                        {batch.date}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      Submitted by <strong>{batch.submittedByName}</strong> ·{' '}
+                      <span className="font-mono font-semibold text-slate-900">
+                        {batch.entries.length} worker(s) · {formatINR(batch.totalAmount)}
+                      </span>{' '}
+                      · Ref <span className="font-mono">{batch.batchId}</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setApprovalBusyId(batch.batchId);
+                        try {
+                          await reviewWeeklyFoodApproval({
+                            advanceIds: batch.entries.map((e) => e.id),
+                            decision: 'approved',
+                          });
+                        } finally {
+                          setApprovalBusyId(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-md hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Approve Run</span>
+                    </button>
+                    <a
+                      href={approveWaUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-white border border-emerald-300 rounded-md hover:bg-emerald-50 whitespace-nowrap"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Send Approval WA</span>
+                    </a>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setApprovalBusyId(batch.batchId);
+                        try {
+                          await reviewWeeklyFoodApproval({
+                            advanceIds: batch.entries.map((e) => e.id),
+                            decision: 'rejected',
+                          });
+                        } finally {
+                          setApprovalBusyId(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Reject</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Open Flat Tile-Laying Issues (Visible to Admin & Supervisors until Rectified) */}
+      {openZoneIssues.length > 0 && (
+        <section
+          data-testid="dashboard-open-zone-issues-card"
+          className="bg-white border border-red-300 rounded-lg p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" aria-hidden="true" />
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">
+                  Open Flat Tile-Laying Issues ({openZoneIssues.length})
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Active flat remarks &amp; voice issues assigned to workers — stay visible until marked rectified.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('projects')}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-orange-700 hover:text-orange-800 whitespace-nowrap"
+            >
+              <span>Inspect in Projects &amp; Flats</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {openZoneIssues.slice(0, 6).map((issue) => {
+              const rowKey = `${issue.flatId}:${issue.zoneKey}`;
+              const busy = rectifyingZoneKey === rowKey;
+              return (
+                <div
+                  key={rowKey}
+                  className="p-3 bg-red-50/60 border border-red-200 rounded-md flex flex-col justify-between gap-2"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-slate-900">
+                        Unit {issue.unitNumber} · {issue.zoneLabel}
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-red-100 text-red-800 rounded">
+                        OPEN ISSUE
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      {issue.projectName} · {issue.towerName}
+                      {issue.assignedEmployeeName ? ` · Worker: ${issue.assignedEmployeeName}` : ''}
+                    </div>
+                    {(issue.notes || issue.voiceNoteTranscript) && (
+                      <p className="text-xs text-slate-800 line-clamp-2">
+                        {issue.notes || issue.voiceNoteTranscript}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setRectifyingZoneKey(rowKey);
+                        try {
+                          await rectifyFlatZoneIssue({ flatId: issue.flatId, zoneKey: issue.zoneKey });
+                        } finally {
+                          setRectifyingZoneKey(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                      <span>{busy ? 'Saving...' : 'Mark Rectified'}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Admin-Only Supervisor Tool Purchases & Site Spends Queue */}
+      {!isSupervisor && supervisorToolSummary.totalCount > 0 && (
+        <section
+          data-testid="dashboard-supervisor-tools-card"
+          className="bg-white border border-slate-200 rounded-lg p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-orange-700 shrink-0" aria-hidden="true" />
+              <div>
+                <h2 className="text-base font-semibold text-slate-900">
+                  Supervisor Tool Purchases &amp; Site Spends ({supervisorToolSummary.pendingCount} Pending ·{' '}
+                  {formatINR(supervisorToolSummary.pendingAmount)})
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Supervisor-submitted blades, trowels &amp; site purchase bills awaiting Admin approval or reimbursement.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('expenses')}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-orange-700 hover:text-orange-800 whitespace-nowrap"
+            >
+              <span>Open Full Expenses</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {supervisorToolSummary.rows.slice(0, 5).map((exp) => {
+              const status = exp.reimbursementStatus || 'pending_admin';
+              const busy = reviewingExpId === exp.id;
+              return (
+                <div
+                  key={exp.id}
+                  className="p-3 bg-slate-50 border border-slate-200 rounded-md flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 font-semibold text-slate-900">
+                      <span>{exp.description}</span>
+                      <span className="font-mono text-orange-700">{formatINR(exp.amount)}</span>
+                      <span
+                        className={`px-1.5 py-0.5 text-[10px] font-mono rounded border ${
+                          status === 'reimbursed'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : status === 'approved'
+                              ? 'bg-sky-50 text-sky-800 border-sky-200'
+                              : 'bg-amber-50 text-amber-800 border-amber-200'
+                        }`}
+                      >
+                        {status === 'reimbursed'
+                          ? 'REIMBURSED'
+                          : status === 'approved'
+                            ? 'APPROVED'
+                            : 'PENDING ADMIN'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      By <strong>{exp.recordedByName || 'Supervisor'}</strong> · {exp.projectName}
+                      {exp.towerName ? ` (${exp.towerName})` : ''} · {exp.date}
+                      {exp.vendorName ? ` · Vendor: ${exp.vendorName}` : ''}
+                      {exp.billReceiptNumber ? ` · Bill #${exp.billReceiptNumber}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {status === 'pending_admin' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          setReviewingExpId(exp.id);
+                          try {
+                            await reviewSupervisorExpense(exp.id, 'approved');
+                          } finally {
+                            setReviewingExpId(null);
+                          }
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-white bg-sky-700 rounded hover:bg-sky-800 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                    )}
+                    {status !== 'reimbursed' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          setReviewingExpId(exp.id);
+                          try {
+                            await reviewSupervisorExpense(exp.id, 'reimbursed');
+                          } finally {
+                            setReviewingExpId(null);
+                          }
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                      >
+                        Mark Reimbursed
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Executive Summary (D3 KPIs & Interactive Charts) */}
       <ExecutiveSummarySection
         projects={projects}
@@ -538,14 +1116,16 @@ export function DashboardView({
 
         <div className="bg-white border border-slate-200 rounded-lg p-5">
           <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-            <span>Net Payable Balance</span>
+            <span>{isSupervisor ? 'Tower Expenses & Food' : 'Net Payable Balance'}</span>
             <Wallet className="w-4 h-4 text-slate-400" aria-hidden="true" />
           </div>
           <div className="mt-2 text-2xl font-semibold font-mono tabular-nums text-slate-900">
-            {formatINR(totalNetPayable)}
+            {isSupervisor ? formatINR(expenseBreakdown.grandTotal) : formatINR(totalNetPayable)}
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            Total Site Spend: {formatINR(expenseBreakdown.grandTotal)}
+            {isSupervisor
+              ? `${advances.length} advance entr${advances.length === 1 ? 'y' : 'ies'} recorded`
+              : `Total Site Spend: ${formatINR(expenseBreakdown.grandTotal)}`}
           </p>
         </div>
       </div>
@@ -888,6 +1468,13 @@ export function DashboardView({
           </div>
         )}
       </section>
+
+      {!isSupervisor && (
+        <WeeklySiteEmailModal
+          isOpen={showWeeklyEmailModal}
+          onClose={() => setShowWeeklyEmailModal(false)}
+        />
+      )}
     </div>
   );
 }

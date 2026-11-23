@@ -1,5 +1,12 @@
 import { jsPDF } from 'jspdf';
-import type { BillingDocument, CompanyProfile, Employee } from '../types/avy';
+import type {
+  BillingDocument,
+  CompanyProfile,
+  CustomQrAccentTheme,
+  CustomQrErrorLevel,
+  CustomQrLayout,
+  Employee,
+} from '../types/avy';
 import {
   BILLING_DOC_TYPE_LABELS,
   formatAmountInWordsINR,
@@ -14,7 +21,8 @@ import {
 } from './bulkWorkerCards';
 import type { ProjectWorkStatusOverview, WorkAreaFilter } from './operations';
 import { WORK_AREA_FILTER_OPTIONS } from './operations';
-import { generateQrPngDataUrl } from './qrProfile';
+import { CUSTOM_QR_ACCENT_THEMES, generateQrPngDataUrl } from './qrProfile';
+import type { ProjectLogsSummaryReport } from './projectLogsReport';
 import { ZONE_STATUS_LABELS } from './tileZones';
 
 export const MAX_DOCUMENT_BYTES = 450 * 1024; // 450 KB raw file ceiling for Firestore & localStorage safety
@@ -408,6 +416,7 @@ export function buildTowerAttendancePdfBlob(params: {
   absentNames: string[];
   unmarkedNames: string[];
   totalWageText: string;
+  hideWages?: boolean;
 }): { blob: Blob; fileName: string } {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   let y = 16;
@@ -440,11 +449,10 @@ export function buildTowerAttendancePdfBlob(params: {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(15, 23, 42);
-  doc.text(
-    `Present: ${params.presentNames.length}    Half-Day: ${params.halfDayNames.length}    Absent: ${params.absentNames.length}    Unmarked: ${params.unmarkedNames.length}    Day Wage Total: ${params.totalWageText}`,
-    18,
-    y + 8
-  );
+  const summaryText = params.hideWages
+    ? `Present: ${params.presentNames.length}    Half-Day: ${params.halfDayNames.length}    Absent: ${params.absentNames.length}    Unmarked: ${params.unmarkedNames.length}`
+    : `Present: ${params.presentNames.length}    Half-Day: ${params.halfDayNames.length}    Absent: ${params.absentNames.length}    Unmarked: ${params.unmarkedNames.length}    Day Wage Total: ${params.totalWageText}`;
+  doc.text(summaryText, 18, y + 8);
   y += 20;
 
   const renderSection = (title: string, items: string[], color: [number, number, number]) => {
@@ -589,6 +597,7 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
   overtimeHours: number;
   totalWagesEarnedText: string;
   monthAdvancesText: string;
+  hideSalaryRates?: boolean;
   days: {
     day: number;
     date: string;
@@ -602,6 +611,7 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
 }): { blob: Blob; fileName: string } {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   let y = 14;
+  const hideSalary = Boolean(params.hideSalaryRates);
 
   // Header band
   doc.setFillColor(15, 23, 42);
@@ -615,7 +625,9 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
   doc.setTextColor(226, 232, 240);
   doc.text(`Month: ${params.monthLabel}`, 18, y + 12.2);
   doc.text(`ID: ${params.empCode}`, 192, y + 6.8, { align: 'right' });
-  doc.text(`Daily Rate: ${params.dailyRateText}`, 192, y + 12.2, { align: 'right' });
+  if (!hideSalary) {
+    doc.text(`Daily Rate: ${params.dailyRateText}`, 192, y + 12.2, { align: 'right' });
+  }
   y += 20;
 
   // Employee Identity Strip
@@ -636,11 +648,10 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(
-    `P: ${params.presentDays}   HD: ${params.halfDays}   A: ${params.absentDays}   Eff Days: ${params.effectiveDays}d   OT: ${params.overtimeHours}h   Wages: ${params.totalWagesEarnedText}   Adv: ${params.monthAdvancesText}`,
-    18,
-    y + 7.5
-  );
+  const summaryLine = hideSalary
+    ? `P: ${params.presentDays}   HD: ${params.halfDays}   A: ${params.absentDays}   Eff Days: ${params.effectiveDays}d   OT: ${params.overtimeHours}h   Adv: ${params.monthAdvancesText}`
+    : `P: ${params.presentDays}   HD: ${params.halfDays}   A: ${params.absentDays}   Eff Days: ${params.effectiveDays}d   OT: ${params.overtimeHours}h   Wages: ${params.totalWagesEarnedText}   Adv: ${params.monthAdvancesText}`;
+  doc.text(summaryLine, 18, y + 7.5);
   y += 16;
 
   // Day Table Header
@@ -654,8 +665,12 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
   doc.text('Status', 52, y + 4.4);
   doc.text('Site / Tower', 76, y + 4.4);
   doc.text('OT (h)', 135, y + 4.4, { align: 'right' });
-  doc.text('Earned', 158, y + 4.4, { align: 'right' });
-  doc.text('Notes', 162, y + 4.4);
+  if (!hideSalary) {
+    doc.text('Earned', 158, y + 4.4, { align: 'right' });
+    doc.text('Notes', 162, y + 4.4);
+  } else {
+    doc.text('Notes', 142, y + 4.4);
+  }
   y += 7.5;
 
   doc.setFont('helvetica', 'normal');
@@ -679,8 +694,12 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
     doc.setTextColor(51, 65, 85);
     doc.text((row.siteLabel || '-').slice(0, 26), 76, y + 3.4);
     doc.text(row.otHours > 0 ? String(row.otHours) : '-', 135, y + 3.4, { align: 'right' });
-    doc.text(row.earnedText, 158, y + 3.4, { align: 'right' });
-    doc.text((row.notes || '').slice(0, 18), 162, y + 3.4);
+    if (!hideSalary) {
+      doc.text(row.earnedText, 158, y + 3.4, { align: 'right' });
+      doc.text((row.notes || '').slice(0, 18), 162, y + 3.4);
+    } else {
+      doc.text((row.notes || '').slice(0, 28), 142, y + 3.4);
+    }
 
     doc.setDrawColor(241, 245, 249);
     doc.line(14, y + 4.8, 196, y + 4.8);
@@ -706,41 +725,65 @@ export function buildEmployeeAttendanceCardPdfBlob(params: {
   return { blob: doc.output('blob'), fileName };
 }
 
-export async function buildWorkforceQrSheetPdfBlob(params: {
+export interface CustomQrSheetItem {
+  codeLabel: string;
+  title: string;
+  subtitle: string;
+  metaLine: string;
+  footerLabel: string;
+  scanUrl: string;
+}
+
+export async function buildCustomQrSheetPdfBlob(params: {
   companyName: string;
-  layout: 'badges' | 'stickers';
-  items: Array<{
-    empCode: string;
-    fullName: string;
-    role: string;
-    siteLabel: string;
-    status: string;
-    scanUrl: string;
-  }>;
+  targetLabel: string;
+  layout: CustomQrLayout;
+  themeId?: CustomQrAccentTheme;
+  errorCorrection?: CustomQrErrorLevel;
+  showCompanyHeader?: boolean;
+  showMetaDetails?: boolean;
+  items: CustomQrSheetItem[];
 }): Promise<{ blob: Blob; fileName: string }> {
+  const theme = CUSTOM_QR_ACCENT_THEMES[params.themeId || 'navy_orange'] || CUSTOM_QR_ACCENT_THEMES.navy_orange;
+  const errLvl: CustomQrErrorLevel = params.errorCorrection || 'M';
+  const showCompanyHeader = params.showCompanyHeader !== false;
+  const showMetaDetails = params.showMetaDetails !== false;
+
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const qrWidth = params.layout === 'posters' ? 360 : 260;
   const qrDataUrls = await Promise.all(
-    params.items.map((item) => generateQrPngDataUrl(item.scanUrl, 260))
+    params.items.map((item) =>
+      generateQrPngDataUrl(item.scanUrl, qrWidth, {
+        errorCorrectionLevel: errLvl,
+        darkColor: theme.qrDarkHex,
+      })
+    )
   );
 
+  const isPosters = params.layout === 'posters';
   const isStickers = params.layout === 'stickers';
-  const cols = isStickers ? 3 : 2;
-  const rowsPerPage = isStickers ? 4 : 3;
+  const cols = isPosters ? 1 : isStickers ? 3 : 2;
+  const rowsPerPage = isPosters ? 2 : isStickers ? 4 : 3;
   const perPage = cols * rowsPerPage;
 
   const marginX = 12;
   const startY = 22;
-  const gapX = isStickers ? 5 : 8;
-  const gapY = isStickers ? 6 : 8;
+  const gapX = isPosters ? 0 : isStickers ? 5 : 8;
+  const gapY = isPosters ? 10 : isStickers ? 6 : 8;
   const cardW = (210 - marginX * 2 - gapX * (cols - 1)) / cols;
-  const cardH = isStickers ? 62 : 82;
+  const cardH = isPosters ? 124 : isStickers ? 62 : 82;
 
   const drawPageHeader = (pageIdx: number, totalPages: number) => {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
     doc.setTextColor(15, 23, 42);
+    const layoutTitle = isPosters
+      ? 'Site Gate Posters'
+      : isStickers
+        ? 'Compact Stickers'
+        : 'Verification Badges';
     doc.text(
-      `${params.companyName} — Workforce QR Verification ${isStickers ? 'Stickers' : 'Badges'}`,
+      `${params.companyName} — ${params.targetLabel} QR ${layoutTitle}`,
       marginX,
       12
     );
@@ -748,7 +791,7 @@ export async function buildWorkforceQrSheetPdfBlob(params: {
     doc.setFontSize(8);
     doc.setTextColor(100, 116, 139);
     doc.text(
-      `Scan any QR code to view live read-only site deployment & work status · Page ${pageIdx + 1}/${totalPages}`,
+      `Scan any QR code to open live read-only verification & tracking pass · ECC-${errLvl} · Page ${pageIdx + 1}/${totalPages}`,
       marginX,
       17
     );
@@ -756,6 +799,9 @@ export async function buildWorkforceQrSheetPdfBlob(params: {
 
   const totalPages = Math.max(1, Math.ceil(params.items.length / perPage));
   drawPageHeader(0, totalPages);
+
+  const [hr, hg, hb] = theme.headerRgb;
+  const [ar, ag, ab] = theme.accentRgb;
 
   params.items.forEach((item, index) => {
     const pageIdx = Math.floor(index / perPage);
@@ -772,45 +818,115 @@ export async function buildWorkforceQrSheetPdfBlob(params: {
 
     doc.setDrawColor(203, 213, 225);
     doc.setFillColor(255, 255, 255);
-    doc.roundedRect(x, y, cardW, cardH, 2, 2, 'FD');
+    doc.roundedRect(x, y, cardW, cardH, 2.5, 2.5, 'FD');
 
-    // Header band
-    doc.setFillColor(15, 23, 42);
-    doc.rect(x, y, cardW, isStickers ? 7 : 9, 'F');
-    doc.setFillColor(194, 65, 12);
-    doc.rect(x, y + (isStickers ? 7 : 9), cardW, 1, 'F');
+    const headerH = isPosters ? 15 : isStickers ? 7 : 9;
+    if (showCompanyHeader) {
+      doc.setFillColor(hr, hg, hb);
+      doc.rect(x, y, cardW, headerH, 'F');
+      doc.setFillColor(ar, ag, ab);
+      doc.rect(x, y + headerH, cardW, isPosters ? 1.5 : 1, 'F');
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(isStickers ? 7 : 8.5);
-    doc.setTextColor(255, 255, 255);
-    doc.text(params.companyName.slice(0, 22).toUpperCase(), x + 3, y + (isStickers ? 4.8 : 6));
-    doc.setFontSize(isStickers ? 6.2 : 7.5);
-    doc.setTextColor(253, 186, 116);
-    doc.text(item.empCode, x + cardW - 3, y + (isStickers ? 4.8 : 6), { align: 'right' });
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(isPosters ? 11 : isStickers ? 7 : 8.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text(
+        params.companyName.slice(0, isPosters ? 34 : 22).toUpperCase(),
+        x + (isPosters ? 5 : 3),
+        y + (isPosters ? 9.5 : isStickers ? 4.8 : 6)
+      );
+      doc.setFontSize(isPosters ? 9.5 : isStickers ? 6.2 : 7.5);
+      doc.setTextColor(255, 237, 213);
+      doc.text(
+        item.codeLabel.slice(0, 26),
+        x + cardW - (isPosters ? 5 : 3),
+        y + (isPosters ? 9.5 : isStickers ? 4.8 : 6),
+        { align: 'right' }
+      );
+    } else {
+      doc.setFillColor(ar, ag, ab);
+      doc.rect(x, y, cardW, 2, 'F');
+    }
 
-    if (isStickers) {
+    const bodyTop = y + (showCompanyHeader ? headerH + 2 : 3);
+
+    if (isPosters) {
+      const qrSize = 62;
+      const qrX = x + 10;
+      const qrY = bodyTop + 14;
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(qrX - 2.5, qrY - 2.5, qrSize + 5, qrSize + 5, 2, 2, 'D');
+      doc.addImage(qrDataUrls[index], 'PNG', qrX, qrY, qrSize, qrSize);
+
+      const textX = qrX + qrSize + 12;
+      const maxTextW = x + cardW - textX - 8;
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(ar, ag, ab);
+      doc.text(item.codeLabel.slice(0, 42).toUpperCase(), textX, qrY + 8);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(17);
+      doc.setTextColor(15, 23, 42);
+      const titleLines = doc.splitTextToSize(item.title, maxTextW) as string[];
+      titleLines.slice(0, 2).forEach((ln, idx) => {
+        doc.text(ln, textX, qrY + 18 + idx * 7.5);
+      });
+
+      const subY = qrY + 18 + Math.min(2, titleLines.length) * 7.5 + 3;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10.5);
+      doc.setTextColor(ar, ag, ab);
+      const subLines = doc.splitTextToSize(item.subtitle, maxTextW) as string[];
+      subLines.slice(0, 2).forEach((ln, idx) => {
+        doc.text(ln, textX, subY + idx * 5.2);
+      });
+
+      if (showMetaDetails && item.metaLine) {
+        const metaY = subY + Math.min(2, subLines.length) * 5.2 + 5;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.5);
+        doc.setTextColor(51, 65, 85);
+        const metaLines = doc.splitTextToSize(item.metaLine, maxTextW) as string[];
+        metaLines.slice(0, 3).forEach((ln, idx) => {
+          doc.text(ln, textX, metaY + idx * 4.8);
+        });
+      }
+
+      doc.setFillColor(248, 250, 252);
+      doc.rect(x + 0.5, y + cardH - 12, cardW - 1, 11.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(item.footerLabel.slice(0, 72).toUpperCase(), x + cardW / 2, y + cardH - 4.8, {
+        align: 'center',
+      });
+    } else if (isStickers) {
       const qrSize = 31;
       const qrX = x + (cardW - qrSize) / 2;
-      const qrY = y + 10.5;
+      const qrY = bodyTop + 1;
       doc.addImage(qrDataUrls[index], 'PNG', qrX, qrY, qrSize, qrSize);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8.5);
       doc.setTextColor(15, 23, 42);
-      doc.text(item.fullName.slice(0, 22), x + cardW / 2, qrY + qrSize + 5.2, { align: 'center' });
+      doc.text(item.title.slice(0, 22), x + cardW / 2, qrY + qrSize + 5.2, { align: 'center' });
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
-      doc.setTextColor(194, 65, 12);
-      doc.text(item.role, x + cardW / 2, qrY + qrSize + 9.2, { align: 'center' });
+      doc.setTextColor(ar, ag, ab);
+      doc.text(item.subtitle.slice(0, 26), x + cardW / 2, qrY + qrSize + 9.2, { align: 'center' });
 
-      doc.setFontSize(6.3);
-      doc.setTextColor(71, 85, 105);
-      doc.text(item.siteLabel.slice(0, 28), x + cardW / 2, qrY + qrSize + 13.2, { align: 'center' });
+      if (showMetaDetails) {
+        doc.setFontSize(6.3);
+        doc.setTextColor(71, 85, 105);
+        doc.text(item.metaLine.slice(0, 28), x + cardW / 2, qrY + qrSize + 13.2, { align: 'center' });
+      }
     } else {
       const qrSize = 38;
       const qrX = x + (cardW - qrSize) / 2;
-      const qrY = y + 13;
+      const qrY = bodyTop + 2.5;
       doc.setDrawColor(226, 232, 240);
       doc.roundedRect(qrX - 1.5, qrY - 1.5, qrSize + 3, qrSize + 3, 1.2, 1.2, 'D');
       doc.addImage(qrDataUrls[index], 'PNG', qrX, qrY, qrSize, qrSize);
@@ -818,33 +934,64 @@ export async function buildWorkforceQrSheetPdfBlob(params: {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10.5);
       doc.setTextColor(15, 23, 42);
-      doc.text(item.fullName.slice(0, 24), x + cardW / 2, qrY + qrSize + 7.5, { align: 'center' });
+      doc.text(item.title.slice(0, 26), x + cardW / 2, qrY + qrSize + 7.5, { align: 'center' });
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
-      doc.setTextColor(194, 65, 12);
-      doc.text(`${item.empCode}  ·  ${item.role}`, x + cardW / 2, qrY + qrSize + 12.2, {
+      doc.setTextColor(ar, ag, ab);
+      doc.text(item.subtitle.slice(0, 34), x + cardW / 2, qrY + qrSize + 12.2, {
         align: 'center',
       });
 
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7.2);
-      doc.setTextColor(51, 65, 85);
-      doc.text(item.siteLabel.slice(0, 34), x + cardW / 2, qrY + qrSize + 16.8, {
-        align: 'center',
-      });
+      if (showMetaDetails && item.metaLine) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.2);
+        doc.setTextColor(51, 65, 85);
+        doc.text(item.metaLine.slice(0, 36), x + cardW / 2, qrY + qrSize + 16.8, {
+          align: 'center',
+        });
+      }
 
       doc.setFontSize(6.3);
       doc.setTextColor(100, 116, 139);
-      doc.text('SCAN QR FOR LIVE SITE & WORK STATUS', x + cardW / 2, y + cardH - 3.5, {
+      doc.text(item.footerLabel.slice(0, 44).toUpperCase(), x + cardW / 2, y + cardH - 3.5, {
         align: 'center',
       });
     }
   });
 
   const safeCo = params.companyName.replace(/[^a-zA-Z0-9]+/g, '_');
-  const fileName = `${safeCo}_Workforce_QR_${isStickers ? 'Stickers' : 'Badges'}.pdf`;
+  const safeTarget = params.targetLabel.replace(/[^a-zA-Z0-9]+/g, '_');
+  const fileSuffix = isPosters ? 'Posters' : isStickers ? 'Stickers' : 'Badges';
+  const fileName = `${safeCo}_${safeTarget}_QR_${fileSuffix}.pdf`;
   return { blob: doc.output('blob'), fileName };
+}
+
+export async function buildWorkforceQrSheetPdfBlob(params: {
+  companyName: string;
+  layout: 'badges' | 'stickers';
+  items: Array<{
+    empCode: string;
+    fullName: string;
+    role: string;
+    siteLabel: string;
+    status: string;
+    scanUrl: string;
+  }>;
+}): Promise<{ blob: Blob; fileName: string }> {
+  return buildCustomQrSheetPdfBlob({
+    companyName: params.companyName,
+    targetLabel: 'Workforce',
+    layout: params.layout,
+    items: params.items.map((item) => ({
+      codeLabel: item.empCode,
+      title: item.fullName,
+      subtitle: `${item.empCode}  ·  ${item.role}`,
+      metaLine: item.siteLabel,
+      footerLabel: 'SCAN QR FOR LIVE SITE & WORK STATUS',
+      scanUrl: item.scanUrl,
+    })),
+  });
 }
 
 /**
@@ -856,63 +1003,123 @@ export function buildBillingDocumentPdfBlob(
 ): { blob: Blob; fileName: string } {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageW = 210;
+  const pageH = 297;
   const margin = 14;
   const contentW = pageW - margin * 2;
   let y = 14;
 
-  const docTitle = BILLING_DOC_TYPE_LABELS[billingDoc.docType].toUpperCase();
-
-  // Header Banner
-  doc.setFillColor(15, 23, 42);
-  doc.rect(margin, y, contentW, 24, 'F');
-  doc.setFillColor(194, 65, 12);
-  doc.rect(margin, y + 24, contentW, 1.5, 'F');
-
-  if (company.logoDataUrl && company.logoDataUrl.startsWith('data:image/')) {
-    try {
-      const fmt = company.logoDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
-      doc.setFillColor(255, 255, 255);
-      doc.roundedRect(margin + 3, y + 3, 18, 18, 1.5, 1.5, 'F');
-      doc.addImage(company.logoDataUrl, fmt, margin + 4, y + 4, 16, 16);
-    } catch {
-      // Ignore invalid logo
-    }
-  }
-
-  const coX = company.logoDataUrl ? margin + 24 : margin + 5;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(255, 255, 255);
-  doc.text(company.companyName.toUpperCase(), coX, y + 8);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(203, 213, 225);
-  doc.text((company.tagline || 'Tile Laying & Stone Finishing Contractors').slice(0, 56), coX, y + 12.5);
-  doc.text((company.address || '').slice(0, 74), coX, y + 16.8);
-  doc.text(
-    `GSTIN: ${company.gstNumber || 'N/A'}   |   Ph: ${company.hrContact || '-'}   |   ${company.hrEmail || ''}`.slice(
-      0,
-      78
-    ),
-    coX,
-    y + 21
+  const effectiveBgUrl = billingDoc.useCustomLetterhead
+    ? billingDoc.letterheadBgDataUrl || company.quotationLetterheadBgDataUrl || ''
+    : '';
+  const effectiveOpacity =
+    typeof billingDoc.letterheadBgOpacity === 'number' && Number.isFinite(billingDoc.letterheadBgOpacity)
+      ? Math.max(0.05, Math.min(1, billingDoc.letterheadBgOpacity))
+      : typeof company.quotationLetterheadOpacity === 'number' &&
+          Number.isFinite(company.quotationLetterheadOpacity)
+        ? Math.max(0.05, Math.min(1, company.quotationLetterheadOpacity))
+        : 0.14;
+  const hideDefaultHeader = Boolean(
+    billingDoc.useCustomLetterhead && billingDoc.hideDefaultHeader && effectiveBgUrl
   );
 
-  // Right Document Type & Number badge
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(253, 186, 116);
-  doc.text(docTitle, pageW - margin - 4, y + 9, { align: 'right' });
-  doc.setFontSize(9.5);
-  doc.setTextColor(255, 255, 255);
-  doc.text(billingDoc.docNumber, pageW - margin - 4, y + 14.5, { align: 'right' });
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(226, 232, 240);
-  doc.text(`Date: ${billingDoc.issueDate}`, pageW - margin - 4, y + 19.5, { align: 'right' });
+  const paintPageLetterhead = () => {
+    if (!effectiveBgUrl || !effectiveBgUrl.startsWith('data:image/')) return;
+    try {
+      const fmt = effectiveBgUrl.includes('image/png') ? 'PNG' : 'JPEG';
+      doc.addImage(effectiveBgUrl, fmt, 0, 0, pageW, pageH);
+      const veilAlpha = Math.max(0, Math.min(0.94, 1 - effectiveOpacity));
+      if (veilAlpha > 0.04) {
+        const GStateCtor = (doc as unknown as { GState?: new (opts: { opacity: number }) => unknown }).GState;
+        if (GStateCtor) {
+          doc.saveGraphicsState();
+          doc.setGState(new GStateCtor({ opacity: veilAlpha }) as never);
+          doc.setFillColor(255, 255, 255);
+          doc.rect(0, 0, pageW, pageH, 'F');
+          doc.restoreGraphicsState();
+        }
+      }
+    } catch {
+      // Ignore invalid letterhead background image
+    }
+  };
 
-  y += 30;
+  paintPageLetterhead();
+
+  const docTitle = BILLING_DOC_TYPE_LABELS[billingDoc.docType].toUpperCase();
+
+  if (hideDefaultHeader) {
+    y = 26;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(pageW - margin - 66, y, 66, 17, 1.5, 1.5, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(194, 65, 12);
+    doc.text(docTitle, pageW - margin - 3, y + 5.5, { align: 'right' });
+    doc.setFontSize(9.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(billingDoc.docNumber, pageW - margin - 3, y + 10.5, { align: 'right' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Date: ${billingDoc.issueDate}`, pageW - margin - 3, y + 14.8, { align: 'right' });
+    if (company.gstNumber) {
+      doc.text(`Supplier GSTIN: ${company.gstNumber}`, margin, y + 14.8);
+    }
+    y += 22;
+  } else {
+    // Header Banner
+    doc.setFillColor(15, 23, 42);
+    doc.rect(margin, y, contentW, 24, 'F');
+    doc.setFillColor(194, 65, 12);
+    doc.rect(margin, y + 24, contentW, 1.5, 'F');
+
+    if (company.logoDataUrl && company.logoDataUrl.startsWith('data:image/')) {
+      try {
+        const fmt = company.logoDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(margin + 3, y + 3, 18, 18, 1.5, 1.5, 'F');
+        doc.addImage(company.logoDataUrl, fmt, margin + 4, y + 4, 16, 16);
+      } catch {
+        // Ignore invalid logo
+      }
+    }
+
+    const coX = company.logoDataUrl ? margin + 24 : margin + 5;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(255, 255, 255);
+    doc.text(company.companyName.toUpperCase(), coX, y + 8);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(203, 213, 225);
+    doc.text((company.tagline || 'Tile Laying & Stone Finishing Contractors').slice(0, 56), coX, y + 12.5);
+    doc.text((company.address || '').slice(0, 74), coX, y + 16.8);
+    doc.text(
+      `GSTIN: ${company.gstNumber || 'N/A'}   |   Ph: ${company.hrContact || '-'}   |   ${company.hrEmail || ''}`.slice(
+        0,
+        78
+      ),
+      coX,
+      y + 21
+    );
+
+    // Right Document Type & Number badge
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(253, 186, 116);
+    doc.text(docTitle, pageW - margin - 4, y + 9, { align: 'right' });
+    doc.setFontSize(9.5);
+    doc.setTextColor(255, 255, 255);
+    doc.text(billingDoc.docNumber, pageW - margin - 4, y + 14.5, { align: 'right' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(226, 232, 240);
+    doc.text(`Date: ${billingDoc.issueDate}`, pageW - margin - 4, y + 19.5, { align: 'right' });
+
+    y += 30;
+  }
 
   // Client & Project Details Split Box
   doc.setFillColor(248, 250, 252);
@@ -1968,6 +2175,192 @@ export function buildEmployeePayrollExpensePdfBlob(params: {
   const fileName = `${safeCo}_Employee_Payroll_Advances_Expenses.pdf`;
   return { blob: doc.output('blob'), fileName };
 }
+
+/**
+ * Generates an A4 Landscape PDF Summary Report of all aggregated logs for a selected project.
+ */
+export function buildProjectLogsSummaryPdfBlob(params: {
+  company: CompanyProfile;
+  report: ProjectLogsSummaryReport;
+}): { blob: Blob; fileName: string } {
+  const { company, report } = params;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = 297;
+  const margin = 12;
+  const contentW = pageW - margin * 2;
+
+  const fmtRs = (v: number) => `Rs.${Math.abs(Math.round(v)).toLocaleString('en-IN')}`;
+  const periodLabel =
+    report.fromDate || report.toDate
+      ? `${report.fromDate || 'Start'} to ${report.toDate || 'Today'}`
+      : 'All Recorded Dates';
+
+  const drawHeader = (pageNum: number) => {
+    doc.setFillColor(15, 23, 42);
+    doc.rect(margin, 10, contentW, 20, 'F');
+    doc.setFillColor(194, 65, 12);
+    doc.rect(margin, 30, contentW, 1.3, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(255, 255, 255);
+    doc.text(
+      `${(company.companyName || 'AVY INFRA').toUpperCase()} — PROJECT LOGS SUMMARY REPORT`,
+      margin + 4,
+      17.5
+    );
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(226, 232, 240);
+    doc.text(
+      `Project: ${report.project.name} (${report.project.location || 'Site'})   |   Client: ${report.project.clientName || '-'}`,
+      margin + 4,
+      23
+    );
+    doc.text(
+      `Towers: ${report.towersCovered.join(', ') || 'All Towers'}   |   Date Range: ${periodLabel}`.slice(0, 110),
+      margin + 4,
+      27.5
+    );
+
+    doc.text(
+      `Generated: ${new Date().toLocaleDateString('en-IN')}   |   Page ${pageNum}`,
+      pageW - margin - 4,
+      23,
+      { align: 'right' }
+    );
+  };
+
+  let pageNum = 1;
+  drawHeader(pageNum);
+  let y = 35;
+
+  // 5 KPI Summary Cards
+  const kpis = [
+    { label: 'Total Project Logs', value: `${report.totalEntries} Entries` },
+    {
+      label: 'Site Journal & Work',
+      value: `${report.countsByCategory.site_log} Logs / ${report.countsByCategory.work_assignment} Tasks`,
+    },
+    {
+      label: 'Work Area & Muster',
+      value: `${Math.round(report.totalWorkSqftLogged).toLocaleString('en-IN')} Sq.Ft / ${report.countsByCategory.attendance} Att`,
+    },
+    {
+      label: 'Advances & Expenses',
+      value: fmtRs(report.totalAdvanceAmount + report.totalSiteExpenseAmount),
+    },
+    {
+      label: 'Wages Logged',
+      value: fmtRs(report.totalWagesLogged),
+    },
+  ];
+
+  const gap = 3;
+  const boxW = (contentW - gap * 4) / 5;
+  kpis.forEach((kpi, idx) => {
+    const bx = margin + idx * (boxW + gap);
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(bx, y, boxW, 13, 1.2, 1.2, 'FD');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(kpi.label, bx + 2.5, y + 4.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(kpi.value.slice(0, 28), bx + 2.5, y + 10.2);
+  });
+
+  y += 17;
+
+  const drawTableHead = (startY: number) => {
+    doc.setFillColor(241, 245, 249);
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(margin, startY, contentW, 7.5, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.setTextColor(51, 65, 85);
+
+    doc.text('Date', margin + 2, startY + 5);
+    doc.text('Category', margin + 24, startY + 5);
+    doc.text('Tower', margin + 56, startY + 5);
+    doc.text('Subject / Entry Details', margin + 84, startY + 5);
+    doc.text('Worker / Logged By', margin + 196, startY + 5);
+    doc.text('Metric / Amt', margin + 245, startY + 5, { align: 'right' });
+    doc.text('Status', pageW - margin - 2, startY + 5, { align: 'right' });
+    return startY + 7.5;
+  };
+
+  y = drawTableHead(y);
+
+  if (report.entries.length === 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text('No project log entries matched the selected date range or categories.', margin + 4, y + 9);
+  } else {
+    report.entries.forEach((entry, idx) => {
+      const detailSummary = `${entry.subject} — ${entry.details}`;
+      const detailLines = doc.splitTextToSize(detailSummary, 108) as string[];
+      const rowH = Math.max(7.5, Math.min(2, detailLines.length) * 3.8 + 3.2);
+
+      if (y + rowH > 192) {
+        doc.addPage();
+        pageNum += 1;
+        drawHeader(pageNum);
+        y = drawTableHead(35);
+      }
+
+      if (idx % 2 === 1) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(margin, y, contentW, rowH, 'F');
+      }
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(15, 23, 42);
+      doc.text(entry.date || '-', margin + 2, y + 4.4);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(194, 65, 12);
+      doc.text(entry.categoryLabel.slice(0, 19), margin + 24, y + 4.4);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(51, 65, 85);
+      doc.text((entry.towerName || '-').slice(0, 17), margin + 56, y + 4.4);
+
+      doc.setTextColor(15, 23, 42);
+      detailLines.slice(0, 2).forEach((ln, lineIdx) => {
+        doc.text(ln, margin + 84, y + 4.2 + lineIdx * 3.6);
+      });
+
+      doc.setTextColor(71, 85, 105);
+      doc.text((entry.actor || '-').slice(0, 24), margin + 196, y + 4.4);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text((entry.metricOrAmount || '-').slice(0, 18), margin + 245, y + 4.4, { align: 'right' });
+
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(51, 65, 85);
+      doc.text((entry.statusLabel || '-').slice(0, 18), pageW - margin - 2, y + 4.4, {
+        align: 'right',
+      });
+
+      doc.setDrawColor(226, 232, 240);
+      doc.line(margin, y + rowH, pageW - margin, y + rowH);
+      y += rowH;
+    });
+  }
+
+  const safeProj = report.project.name.replace(/[^a-zA-Z0-9]+/g, '_');
+  const fileName = `${safeProj}_Project_Logs_Summary_Report.pdf`;
+  return { blob: doc.output('blob'), fileName };
+}
+
 
 
 

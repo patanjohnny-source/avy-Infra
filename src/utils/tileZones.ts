@@ -1,10 +1,12 @@
 import type {
   AssignmentStatus,
   FlatUnit,
+  Project,
   TileZoneCategory,
   TileZoneDefinition,
   TileZoneKey,
   TileZoneState,
+  Tower,
   ZoneStatus,
 } from '../types/avy';
 
@@ -201,6 +203,12 @@ export function createDefaultZones(
     if (patch?.assignedEmployeeName) entry.assignedEmployeeName = patch.assignedEmployeeName;
     if (patch?.updatedDate) entry.updatedDate = patch.updatedDate;
     if (patch?.notes) entry.notes = patch.notes;
+    if (patch?.voiceNoteDataUrl) entry.voiceNoteDataUrl = patch.voiceNoteDataUrl;
+    if (patch?.voiceNoteTranscript) entry.voiceNoteTranscript = patch.voiceNoteTranscript;
+    if (patch?.issueStatus) entry.issueStatus = patch.issueStatus;
+    if (patch?.issueReportedBy) entry.issueReportedBy = patch.issueReportedBy;
+    if (patch?.issueReportedAt) entry.issueReportedAt = patch.issueReportedAt;
+    if (patch?.rectifiedAt) entry.rectifiedAt = patch.rectifiedAt;
     zones[def.key] = entry;
   }
   return zones;
@@ -424,6 +432,75 @@ export interface MixedBhkSpec {
 export interface GeneratedFlatUnitSpec {
   unitNumber: string;
   unitType: string;
+}
+
+export const RESIDENTIAL_BHK_TYPES = [
+  '1 BHK',
+  '2 BHK',
+  '3 BHK',
+  '4 BHK',
+  '5 BHK',
+  'Penthouse',
+] as const;
+
+export interface FloorLayoutPreset {
+  id: string;
+  label: string;
+  shortDesc: string;
+  slotUnitTypes: string[];
+}
+
+export const FLOOR_LAYOUT_PRESETS: FloorLayoutPreset[] = [
+  {
+    id: 'tower_1_8_mixed',
+    label: 'Tower 1 Mix (8 Flats: 3,3,2,2,2,2,3,3 BHK)',
+    shortDesc: '01-02: 3BHK · 03-06: 2BHK · 07-08: 3BHK',
+    slotUnitTypes: ['3 BHK', '3 BHK', '2 BHK', '2 BHK', '2 BHK', '2 BHK', '3 BHK', '3 BHK'],
+  },
+  {
+    id: 'tower_2_4_mixed',
+    label: 'Tower 2 Mix (4 Flats: 4,3,3,4 BHK)',
+    shortDesc: '01: 4BHK · 02-03: 3BHK · 04: 4BHK',
+    slotUnitTypes: ['4 BHK', '3 BHK', '3 BHK', '4 BHK'],
+  },
+  {
+    id: 'luxury_4_5bhk',
+    label: 'Signature Wings (4 Flats: 5,4,4,5 BHK)',
+    shortDesc: '01: 5BHK · 02-03: 4BHK · 04: 5BHK',
+    slotUnitTypes: ['5 BHK', '4 BHK', '4 BHK', '5 BHK'],
+  },
+  {
+    id: 'standard_4_3bhk',
+    label: 'Standard Wing (4 Flats: All 3 BHK)',
+    shortDesc: '01-04: All 3 BHK',
+    slotUnitTypes: ['3 BHK', '3 BHK', '3 BHK', '3 BHK'],
+  },
+];
+
+/**
+ * Generates sequential unit numbers for a floor paired with exact ordered BHK slot definitions
+ * matching real floor plans (e.g. 101=3BHK, 102=3BHK, 103..106=2BHK, 107..108=3BHK from floor 1 to 45).
+ */
+export function buildOrderedSlotFloorUnits(params: {
+  floorNumber: number;
+  slotUnitTypes: string[];
+  prefixOverride?: string;
+}): GeneratedFlatUnitSpec[] {
+  const cleanSlots = params.slotUnitTypes
+    .map((u) => (u || '').trim().slice(0, 40) || '3 BHK')
+    .slice(0, 50);
+  if (cleanSlots.length === 0) return [];
+
+  const unitNumbers = generateUnitNumbersForFloor(
+    params.floorNumber,
+    cleanSlots.length,
+    params.prefixOverride
+  );
+
+  return unitNumbers.map((unitNumber, idx) => ({
+    unitNumber,
+    unitType: cleanSlots[idx] || '3 BHK',
+  }));
 }
 
 /**
@@ -918,4 +995,79 @@ export function upsertFloorCommonUnitsBatch(params: {
   };
 }
 
+export interface OpenZoneIssueSummary {
+  flatId: string;
+  projectId: string;
+  projectName: string;
+  towerId: string;
+  towerName: string;
+  floorNumber: number;
+  floorLabel: string;
+  unitNumber: string;
+  unitType: string;
+  zoneKey: string;
+  zoneLabel: string;
+  zoneStatus: ZoneStatus;
+  assignedEmployeeId?: string;
+  assignedEmpCode?: string;
+  assignedEmployeeName?: string;
+  notes: string;
+  voiceNoteDataUrl?: string;
+  voiceNoteTranscript?: string;
+  issueReportedBy?: string;
+  issueReportedAt?: string;
+}
 
+export function collectOpenZoneIssuesForFlats(params: {
+  flats: FlatUnit[];
+  projects: Project[];
+  towers: Tower[];
+  tileZoneCatalog?: TileZoneDefinition[];
+  employeeId?: string;
+}): OpenZoneIssueSummary[] {
+  const { flats, projects, towers, tileZoneCatalog = TILE_ZONES, employeeId } = params;
+  const projectMap = new Map(projects.map((p) => [p.id, p]));
+  const towerMap = new Map(towers.map((t) => [t.id, t]));
+  const catalogLabelMap = new Map(tileZoneCatalog.map((z) => [z.key, z.label]));
+
+  const issues: OpenZoneIssueSummary[] = [];
+  for (const flat of flats) {
+    const project = projectMap.get(flat.projectId);
+    const tower = towerMap.get(flat.towerId);
+    for (const [zoneKey, zState] of Object.entries(flat.zones || {})) {
+      if (!zState || zState.issueStatus !== 'open') continue;
+      if (employeeId && zState.assignedEmployeeId !== employeeId) continue;
+
+      const label =
+        zState.label || catalogLabelMap.get(zoneKey) || ZONE_LABEL_MAP[zoneKey] || zoneKey;
+
+      issues.push({
+        flatId: flat.id,
+        projectId: flat.projectId,
+        projectName: project?.name || 'Project',
+        towerId: flat.towerId,
+        towerName: tower?.name || 'Tower',
+        floorNumber: flat.floorNumber,
+        floorLabel: flat.floorLabel || formatFloorLabel(flat.floorNumber),
+        unitNumber: flat.unitNumber,
+        unitType: flat.unitType,
+        zoneKey,
+        zoneLabel: label,
+        zoneStatus: zState.status,
+        assignedEmployeeId: zState.assignedEmployeeId,
+        assignedEmpCode: zState.assignedEmpCode,
+        assignedEmployeeName: zState.assignedEmployeeName,
+        notes: zState.notes || '',
+        voiceNoteDataUrl: zState.voiceNoteDataUrl,
+        voiceNoteTranscript: zState.voiceNoteTranscript,
+        issueReportedBy: zState.issueReportedBy,
+        issueReportedAt: zState.issueReportedAt,
+      });
+    }
+  }
+
+  return issues.sort((a, b) =>
+    (b.issueReportedAt || '').localeCompare(a.issueReportedAt || '') ||
+    a.unitNumber.localeCompare(b.unitNumber)
+  );
+}

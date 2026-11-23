@@ -56,6 +56,15 @@ export function generateEmployeeCode(role: EmployeeRole, existingEmployees: Empl
 }
 
 /**
+ * Converts a worker's daily wage rate into the default 1-hour OT rate (Daily Rate ÷ 8 hours).
+ */
+export function computeDefaultHourlyOtRate(dailyRate: number): number {
+  const safeDaily = Math.max(0, Number(dailyRate) || 0);
+  if (safeDaily <= 0) return 0;
+  return Number((safeDaily / 8).toFixed(2));
+}
+
+/**
  * Computes daily wage + overtime earned for an attendance entry.
  */
 export function computeDailyWage(
@@ -483,6 +492,196 @@ export function buildEmployeePayrollExpenseCsv(
   return lines.join('\n');
 }
 
+export function buildMonthlyAttendanceAndPayrollCsv(params: {
+  yearMonth: string;
+  employees: Employee[];
+  attendance: AttendanceRecord[];
+  advances: AdvanceEntry[];
+  settlements: SettlementEntry[];
+  projectIdFilter?: string;
+  hideSalary?: boolean;
+}): { csv: string; fileName: string; rowCount: number; monthLabel: string } {
+  const {
+    yearMonth,
+    employees,
+    attendance,
+    advances,
+    settlements,
+    projectIdFilter = 'all',
+    hideSalary = false,
+  } = params;
+
+  const daysInMonth = getDaysInYearMonth(yearMonth);
+  const monthLabel = formatYearMonthLabel(yearMonth);
+  const monthStart = `${yearMonth}-01`;
+  const monthEnd = `${yearMonth}-${String(daysInMonth).padStart(2, '0')}`;
+
+  const scopedEmployees =
+    projectIdFilter !== 'all'
+      ? employees.filter((e) => e.currentProjectId === projectIdFilter)
+      : employees;
+
+  const filteredAttendance =
+    projectIdFilter !== 'all'
+      ? attendance.filter((a) => a.projectId === projectIdFilter)
+      : attendance;
+
+  const matrix = computeMonthlyAttendanceMatrix(
+    scopedEmployees,
+    filteredAttendance,
+    yearMonth,
+    projectIdFilter
+  );
+
+  const dayHeaders = Array.from({ length: daysInMonth }, (_, i) => `Day ${String(i + 1).padStart(2, '0')}`);
+
+  const header: string[] = [
+    'Month',
+    'Emp Code',
+    'Employee Name',
+    'Role',
+    'Project',
+    'Tower',
+    ...dayHeaders,
+    'Present Days',
+    'Half Days',
+    'Absent Days',
+    'Effective Days Worked',
+    'OT Hours',
+    ...(hideSalary
+      ? []
+      : [
+          'Daily Rate (INR)',
+          'OT Rate/Hr (INR)',
+          'Gross Wages (INR)',
+          'Overtime Pay (INR)',
+          'Total Wages Earned (INR)',
+        ]),
+    'Daily Food Adv (INR)',
+    'Weekly Food Adv (INR)',
+    'Cash Adv (INR)',
+    'Custom Adv (INR)',
+    'Total Advances (INR)',
+    ...(hideSalary ? [] : ['Salary Settled (INR)', 'Net Payable (INR)']),
+  ];
+
+  const lines = [header.map(escapeCsvCell).join(',')];
+
+  let totalPresent = 0;
+  let totalHalf = 0;
+  let totalAbsent = 0;
+  let totalEffective = 0;
+  let totalOtHours = 0;
+  let totalGrossWages = 0;
+  let totalOvertimePay = 0;
+  let totalEarned = 0;
+  let totalDailyFood = 0;
+  let totalWeeklyFood = 0;
+  let totalCashAdv = 0;
+  let totalCustomAdv = 0;
+  let totalAdvances = 0;
+  let totalSettled = 0;
+  let totalNetPayable = 0;
+
+  for (const row of matrix.rows) {
+    const emp = row.employee;
+    const pay = computeEmployeePayroll(
+      emp,
+      filteredAttendance,
+      advances,
+      settlements,
+      { start: monthStart, end: monthEnd }
+    );
+
+    totalPresent += row.presentDays;
+    totalHalf += row.halfDays;
+    totalAbsent += row.absentDays;
+    totalEffective += row.effectiveDays;
+    totalOtHours += row.overtimeHours;
+    totalGrossWages += pay.grossWages;
+    totalOvertimePay += pay.overtimePay;
+    totalEarned += pay.totalEarned;
+    totalDailyFood += pay.dailyFoodAdvance;
+    totalWeeklyFood += pay.weeklyFoodAdvance;
+    totalCashAdv += pay.cashAdvance;
+    totalCustomAdv += pay.customAdvance;
+    totalAdvances += pay.totalAdvances;
+    totalSettled += pay.totalSettled;
+    totalNetPayable += pay.netPayable;
+
+    const dayCells = Array.from({ length: daysInMonth }, (_, i) => {
+      const st = row.dayStatuses[i + 1];
+      if (st === 'present') return 'P';
+      if (st === 'half_day') return 'HD';
+      if (st === 'absent') return 'A';
+      return '-';
+    });
+
+    const csvRow: Array<string | number> = [
+      monthLabel,
+      emp.empCode,
+      emp.fullName,
+      emp.role,
+      emp.currentProjectName || 'Unassigned',
+      emp.currentTowerName || 'All Towers',
+      ...dayCells,
+      row.presentDays,
+      row.halfDays,
+      row.absentDays,
+      row.effectiveDays,
+      row.overtimeHours,
+      ...(hideSalary
+        ? []
+        : [
+            emp.dailyRate,
+            emp.overtimeRate,
+            pay.grossWages,
+            pay.overtimePay,
+            pay.totalEarned,
+          ]),
+      pay.dailyFoodAdvance,
+      pay.weeklyFoodAdvance,
+      pay.cashAdvance,
+      pay.customAdvance,
+      pay.totalAdvances,
+      ...(hideSalary ? [] : [pay.totalSettled, pay.netPayable]),
+    ];
+
+    lines.push(csvRow.map(escapeCsvCell).join(','));
+  }
+
+  const totalRow: Array<string | number> = [
+    monthLabel,
+    'TOTAL',
+    `${matrix.rows.length} Employees`,
+    '',
+    '',
+    '',
+    ...Array.from({ length: daysInMonth }, () => ''),
+    totalPresent,
+    totalHalf,
+    totalAbsent,
+    totalEffective,
+    totalOtHours,
+    ...(hideSalary ? [] : ['', '', totalGrossWages, totalOvertimePay, totalEarned]),
+    totalDailyFood,
+    totalWeeklyFood,
+    totalCashAdv,
+    totalCustomAdv,
+    totalAdvances,
+    ...(hideSalary ? [] : [totalSettled, totalNetPayable]),
+  ];
+
+  lines.push(totalRow.map(escapeCsvCell).join(','));
+
+  return {
+    csv: `\uFEFF${lines.join('\n')}`,
+    fileName: `AVY_INFRA_Attendance_Payroll_${yearMonth}.csv`,
+    rowCount: matrix.rows.length,
+    monthLabel,
+  };
+}
+
 export interface IndividualPaymentDetails {
   summary: EmployeePayrollSummary;
   attendanceEntries: AttendanceRecord[];
@@ -694,7 +893,8 @@ export function formatAdvanceWhatsappMessage(
     | 'notes'
   >,
   updatedNetBalance: number,
-  companyName = 'AVY INFRA'
+  companyName = 'AVY INFRA',
+  options?: { hideNetBalance?: boolean }
 ): string {
   const modeLabel = advance.paymentApp?.trim()
     ? `${advance.paymentMode.toUpperCase()} · ${advance.paymentApp.trim()}`
@@ -712,7 +912,9 @@ export function formatAdvanceWhatsappMessage(
   if (advance.upiId?.trim()) {
     lines.push(`UPI / Bank Ref: ${advance.upiId.trim()}`);
   }
-  lines.push(`Current Net Payable Balance: ${formatINR(updatedNetBalance)}`);
+  if (!options?.hideNetBalance) {
+    lines.push(`Current Net Payable Balance: ${formatINR(updatedNetBalance)}`);
+  }
   if (advance.notes?.trim()) {
     lines.push(`Note: ${advance.notes.trim()}`);
   }
@@ -776,7 +978,8 @@ export function formatMonthlyAttendanceWhatsappMessage(
   matrix: MonthlyAttendanceMatrix,
   siteLabel: string,
   companyName = 'AVY INFRA',
-  singleEmployeeId?: string
+  singleEmployeeId?: string,
+  options?: { hideWages?: boolean }
 ): string {
   const targetRows = singleEmployeeId
     ? matrix.rows.filter((r) => r.employee.id === singleEmployeeId)
@@ -789,10 +992,11 @@ export function formatMonthlyAttendanceWhatsappMessage(
   ];
 
   for (const row of targetRows) {
+    const wageSuffix = options?.hideWages ? '' : ` | Earned ${formatINR(row.totalWagesEarned)}`;
     lines.push(
       `${row.employee.empCode} ${row.employee.fullName} (${row.employee.role}): ` +
         `Effective ${row.effectiveDays}d [P:${row.presentDays} HD:${row.halfDays} A:${row.absentDays}]` +
-        `${row.overtimeHours > 0 ? ` +${row.overtimeHours}h OT` : ''} | Earned ${formatINR(row.totalWagesEarned)}`
+        `${row.overtimeHours > 0 ? ` +${row.overtimeHours}h OT` : ''}${wageSuffix}`
     );
   }
 

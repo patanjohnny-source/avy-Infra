@@ -1,15 +1,25 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CalendarCheck,
   CheckCircle2,
   Eye,
   IndianRupee,
+  MessageSquare,
   ReceiptIndianRupee,
+  Volume2,
   Wallet,
+  X,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { getTodayIso } from '../data/seedData';
-import { computeSingleEmployeeAttendanceCard } from '../utils/operations';
+import { countUnreadMessengerMessages } from '../utils/messenger';
+import {
+  computeSingleEmployeeAttendanceCard,
+  computeWorkedHoursFromInOut,
+  formatAttendanceInOutSummary,
+} from '../utils/operations';
+import { collectOpenZoneIssuesForFlats } from '../utils/tileZones';
 import {
   ATTENDANCE_STATUS_LABELS,
   computeEmployeePayroll,
@@ -20,13 +30,39 @@ import {
   ImageProofLightboxModal,
   type ProofLightboxPayload,
 } from './ImageProofLightboxModal';
+import { TeamMessengerView } from './TeamMessengerView';
 
 export function EmployeePortalView() {
-  const { session, employees, attendance, advances, settlements, companyProfile, acknowledgeAdvance } = useStore();
+  const {
+    session,
+    projects,
+    towers,
+    flats,
+    employees,
+    attendance,
+    advances,
+    settlements,
+    companyProfile,
+    teamMessages,
+    acknowledgeAdvance,
+  } = useStore();
   const today = getTodayIso();
+  const [activeTab, setActiveTab] = useState<'portal' | 'messenger'>('portal');
   const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7));
   const [proofLightbox, setProofLightbox] = useState<ProofLightboxPayload | null>(null);
   const [ackingId, setAckingId] = useState<string | null>(null);
+  const [dismissedPopupSignature, setDismissedPopupSignature] = useState<string>('');
+
+  const unreadMessengerCount = useMemo(
+    () =>
+      countUnreadMessengerMessages({
+        session,
+        companyProfile,
+        employees,
+        messages: teamMessages,
+      }),
+    [session, companyProfile, employees, teamMessages]
+  );
 
   const employee = useMemo(
     () => employees.find((e) => e.id === session?.employeeId) || null,
@@ -69,6 +105,36 @@ export function EmployeePortalView() {
       .sort((a, b) => b.settledDate.localeCompare(a.settledDate));
   }, [settlements, employee]);
 
+  const myOpenIssues = useMemo(() => {
+    if (!employee) return [];
+    return collectOpenZoneIssuesForFlats({
+      flats,
+      projects,
+      towers,
+      tileZoneCatalog: companyProfile?.tileZoneCatalog,
+      employeeId: employee.id,
+    });
+  }, [employee, flats, projects, towers, companyProfile?.tileZoneCatalog]);
+
+  const issueSignature = useMemo(
+    () =>
+      myOpenIssues
+        .map((i) => `${i.flatId}:${i.zoneKey}:${i.notes}:${i.voiceNoteTranscript || ''}`)
+        .join('|'),
+    [myOpenIssues]
+  );
+
+  useEffect(() => {
+    if (myOpenIssues.length === 0) {
+      setDismissedPopupSignature('');
+    }
+  }, [myOpenIssues.length]);
+
+  const showIssuePopup =
+    activeTab === 'portal' &&
+    myOpenIssues.length > 0 &&
+    dismissedPopupSignature !== issueSignature;
+
   if (!employee || !payroll || !monthCard) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-sm text-slate-600">
@@ -79,6 +145,47 @@ export function EmployeePortalView() {
 
   return (
     <div className="space-y-6">
+      {/* Portal Mode Switcher: Self-Service vs Team Messenger */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex items-center gap-1 p-1 bg-slate-200/70 border border-slate-200 rounded-lg">
+          <button
+            type="button"
+            data-testid="employee-tab-portal"
+            onClick={() => setActiveTab('portal')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+              activeTab === 'portal'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <CalendarCheck className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+            <span>My Attendance &amp; Payroll</span>
+          </button>
+          <button
+            type="button"
+            data-testid="employee-tab-messenger"
+            onClick={() => setActiveTab('messenger')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+              activeTab === 'messenger'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+            <span>Team Messenger</span>
+            {unreadMessengerCount > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] font-mono font-bold bg-orange-700 text-white rounded-full">
+                {unreadMessengerCount}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'messenger' ? (
+        <TeamMessengerView />
+      ) : (
+        <>
       {/* Personal Profile Banner */}
       <section className="bg-white border border-slate-200 rounded-lg p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4 min-w-0">
@@ -121,6 +228,62 @@ export function EmployeePortalView() {
           </div>
         </div>
       </section>
+
+      {/* Persistent Supervisor Issue Alerts Banner (Active until rectified) */}
+      {myOpenIssues.length > 0 && (
+        <section
+          data-testid="worker-open-issues-banner"
+          className="bg-amber-50 border border-amber-300 rounded-lg p-4 space-y-2.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-amber-950">
+                Supervisor Issue Alerts Assigned to You ({myOpenIssues.length})
+              </h2>
+            </div>
+            <span className="text-[11px] font-medium text-amber-900">
+              Complete &amp; inform supervisor to rectify
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {myOpenIssues.map((issue) => (
+              <div
+                key={`${issue.flatId}_${issue.zoneKey}`}
+                className="bg-white border border-amber-200 rounded-md p-3 space-y-1.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-900">
+                    Unit <span className="font-mono">{issue.unitNumber}</span> · {issue.zoneLabel}
+                  </span>
+                  <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase bg-red-50 text-red-800 border border-red-200 rounded">
+                    Action Required
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {issue.projectName} · {issue.towerName}
+                  {issue.issueReportedBy ? ` · Flagged by ${issue.issueReportedBy}` : ''}
+                </div>
+                {issue.notes && <div className="text-slate-800 font-medium">{issue.notes}</div>}
+                {issue.voiceNoteTranscript && (
+                  <div className="text-orange-950 bg-orange-50 border border-orange-200 rounded px-2 py-1">
+                    <Volume2 className="w-3 h-3 inline mr-1" aria-hidden="true" />
+                    {issue.voiceNoteTranscript}
+                  </div>
+                )}
+                {issue.voiceNoteDataUrl && (
+                  <audio
+                    controls
+                    src={issue.voiceNoteDataUrl}
+                    className="w-full h-8"
+                    aria-label={`Voice alert for ${issue.unitNumber} ${issue.zoneLabel}`}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* 4 Summary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -393,6 +556,7 @@ export function EmployeePortalView() {
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
                   <th className="py-2.5 px-4">Date</th>
                   <th className="py-2.5 px-3">Site / Tower</th>
+                  <th className="py-2.5 px-3">In / Out</th>
                   <th className="py-2.5 px-3">Status</th>
                   <th className="py-2.5 px-4 text-right">Earned</th>
                 </tr>
@@ -400,39 +564,56 @@ export function EmployeePortalView() {
               <tbody className="divide-y divide-slate-100">
                 {myAttendance.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-8 text-center text-slate-500 text-xs">
+                    <td colSpan={5} className="py-8 text-center text-slate-500 text-xs">
                       No attendance records logged yet.
                     </td>
                   </tr>
                 ) : (
-                  myAttendance.map((rec) => (
-                    <tr key={rec.id} className="hover:bg-slate-50/60">
-                      <td className="py-2.5 px-4 font-mono text-xs text-slate-700 whitespace-nowrap">
-                        {rec.date}
-                      </td>
-                      <td className="py-2.5 px-3 text-xs text-slate-700">
-                        <div>{rec.projectName || '—'}</div>
-                        {rec.towerName && <div className="text-slate-500">{rec.towerName}</div>}
-                      </td>
-                      <td className="py-2.5 px-3 text-xs">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded font-medium ${
-                            rec.status === 'present'
-                              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                              : rec.status === 'half_day'
-                                ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                : 'bg-red-50 text-red-800 border border-red-200'
-                          }`}
-                        >
-                          {ATTENDANCE_STATUS_LABELS[rec.status]}
-                          {rec.overtimeHours > 0 ? ` (+${rec.overtimeHours}h)` : ''}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
-                        {formatINR(rec.dailyWageEarned + rec.overtimePayEarned)}
-                      </td>
-                    </tr>
-                  ))
+                  myAttendance.map((rec) => {
+                    const dur = computeWorkedHoursFromInOut(rec.inTime, rec.outTime);
+                    return (
+                      <tr key={rec.id} className="hover:bg-slate-50/60">
+                        <td className="py-2.5 px-4 font-mono text-xs text-slate-700 whitespace-nowrap">
+                          {rec.date}
+                        </td>
+                        <td className="py-2.5 px-3 text-xs text-slate-700">
+                          <div>{rec.projectName || '—'}</div>
+                          {rec.towerName && <div className="text-slate-500">{rec.towerName}</div>}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-xs text-slate-600 whitespace-nowrap">
+                          {rec.status === 'absent' ? (
+                            <span className="text-slate-400">—</span>
+                          ) : (
+                            <div>
+                              <div>{formatAttendanceInOutSummary(rec)}</div>
+                              {dur.valid && (
+                                <div className="text-[10.5px] text-slate-500">
+                                  Shift: {dur.totalHours}h
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-xs">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded font-medium ${
+                              rec.status === 'present'
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                : rec.status === 'half_day'
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                  : 'bg-red-50 text-red-800 border border-red-200'
+                            }`}
+                          >
+                            {ATTENDANCE_STATUS_LABELS[rec.status]}
+                            {rec.overtimeHours > 0 ? ` (+${rec.overtimeHours}h)` : ''}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
+                          {formatINR(rec.dailyWageEarned + rec.overtimePayEarned)}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -554,6 +735,79 @@ export function EmployeePortalView() {
           payload={proofLightbox}
           onClose={() => setProofLightbox(null)}
         />
+      )}
+
+      {/* Automatic Assigned Worker Issue Popup Dialog */}
+      {showIssuePopup && (
+        <div
+          data-testid="worker-issue-popup-dialog"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="worker-issue-popup-title"
+        >
+          <div className="w-full max-w-lg bg-white border border-amber-300 rounded-lg shadow-xl overflow-hidden max-h-[88vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-3.5 bg-amber-50 border-b border-amber-200 shrink-0">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-800" aria-hidden="true" />
+                <h2 id="worker-issue-popup-title" className="text-sm font-semibold text-amber-950">
+                  Attention: Supervisor Issue Alert ({myOpenIssues.length})
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDismissedPopupSignature(issueSignature)}
+                aria-label="Close issue alert popup"
+                className="p-1.5 text-amber-800 hover:text-amber-950 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 overflow-y-auto">
+              <p className="text-xs text-slate-600">
+                Your supervisor flagged the following flat tile-laying remark(s) on your assigned work:
+              </p>
+              {myOpenIssues.map((issue) => (
+                <div
+                  key={`pop_${issue.flatId}_${issue.zoneKey}`}
+                  className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-1.5 text-xs"
+                >
+                  <div className="font-semibold text-slate-900">
+                    Unit <span className="font-mono">{issue.unitNumber}</span> · {issue.zoneLabel}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {issue.projectName} · {issue.towerName}
+                  </div>
+                  {issue.notes && (
+                    <div className="text-slate-800 font-medium">{issue.notes}</div>
+                  )}
+                  {issue.voiceNoteTranscript && (
+                    <div className="text-orange-950 bg-orange-50 border border-orange-200 rounded px-2 py-1">
+                      <Volume2 className="w-3 h-3 inline mr-1" aria-hidden="true" />
+                      {issue.voiceNoteTranscript}
+                    </div>
+                  )}
+                  {issue.voiceNoteDataUrl && (
+                    <audio controls src={issue.voiceNoteDataUrl} className="w-full h-8" />
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setDismissedPopupSignature(issueSignature)}
+                className="px-4 py-2 text-xs font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800"
+              >
+                Acknowledge &amp; Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+        </>
       )}
     </div>
   );

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { createSeedWorkspace } from '../data/seedData';
 import {
   authenticateWorkspaceUser,
+  canAccessWorkspaceSection,
   canSupervisorUpdateEmployee,
+  canViewEmployeeFixedSalary,
   evaluateAttendanceMutation,
   getScopedEmployees,
   getScopedExpenses,
@@ -209,4 +211,46 @@ test('supervisor cannot directly edit already-marked attendance without Edit fea
     companyProfile: seed.companyProfile,
   });
   assert.equal(empBlocked.allowed, false);
+});
+
+test('supervisor cannot access Docs & Letters or Invoices & Quotes and cannot view employee fixed salaries', () => {
+  const adminSession = {
+    role: 'admin' as const,
+    displayName: 'Admin',
+    assignedTowerIds: [],
+    loginAt: '2026-01-01T00:00:00.000Z',
+  };
+  const supSession = {
+    role: 'supervisor' as const,
+    displayName: 'Prakash Reddy',
+    employeeId: 'emp_avy_sup_005',
+    empCode: 'AVY-SUP-005',
+    assignedTowerIds: ['twr_skyline_a'],
+    loginAt: '2026-01-01T00:00:00.000Z',
+  };
+  const empSession = {
+    role: 'employee' as const,
+    displayName: 'Raju',
+    employeeId: 'emp_avy_msn_001',
+    assignedTowerIds: [],
+    loginAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  assert.equal(canAccessWorkspaceSection(adminSession, 'billing'), true);
+  assert.equal(canAccessWorkspaceSection(adminSession, 'documents'), true);
+  assert.equal(canAccessWorkspaceSection(supSession, 'billing'), false);
+  assert.equal(canAccessWorkspaceSection(supSession, 'documents'), false);
+
+  for (const allowed of ['overview', 'projects', 'workforce', 'payroll', 'expenses', 'sitelogs', 'messenger'] as const) {
+    assert.equal(canAccessWorkspaceSection(supSession, allowed), true);
+    assert.equal(canAccessWorkspaceSection(adminSession, allowed), true);
+  }
+
+  assert.equal(canAccessWorkspaceSection(empSession, 'overview'), false);
+  assert.equal(canAccessWorkspaceSection(null, 'overview'), false);
+
+  assert.equal(canViewEmployeeFixedSalary(adminSession), true);
+  assert.equal(canViewEmployeeFixedSalary(supSession), false);
+  assert.equal(canViewEmployeeFixedSalary(empSession), false);
+  assert.equal(canViewEmployeeFixedSalary(null), false);
 });

@@ -12,6 +12,10 @@ import {
   isSupervisorSession,
 } from '../utils/authAccess';
 import { PaymentProofUploadBox, type PaymentProofState } from './PaymentProofUploadBox';
+import {
+  WeeklyFoodApprovalWhatsappModal,
+  type WeeklyFoodApprovalModalPayload,
+} from './WeeklyFoodApprovalWhatsappModal';
 
 interface GiveAdvanceModalProps {
   isOpen: boolean;
@@ -74,6 +78,9 @@ export function GiveAdvanceModal({
   const [proofImageDataUrl, setProofImageDataUrl] = useState('');
   const [notes, setNotes] = useState('');
   const [sendWhatsappAfter, setSendWhatsappAfter] = useState(true);
+  const [requestAdminApproval, setRequestAdminApproval] = useState(true);
+  const [weeklyFoodWaPayload, setWeeklyFoodWaPayload] =
+    useState<WeeklyFoodApprovalModalPayload | null>(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -106,6 +113,7 @@ export function GiveAdvanceModal({
     setProofImageDataUrl('');
     setError('');
     setSendWhatsappAfter(true);
+    setRequestAdminApproval(true);
   }, [isOpen, preselectedEmployeeId]);
 
   const projectTowers = useMemo(
@@ -113,7 +121,16 @@ export function GiveAdvanceModal({
     [towers, projectId]
   );
 
-  if (!isOpen) return null;
+  if (!isOpen && !weeklyFoodWaPayload) return null;
+
+  if (!isOpen && weeklyFoodWaPayload) {
+    return (
+      <WeeklyFoodApprovalWhatsappModal
+        payload={weeklyFoodWaPayload}
+        onClose={() => setWeeklyFoodWaPayload(null)}
+      />
+    );
+  }
 
   const selectedEmployee = employees.find((e) => e.id === employeeId);
   const dateIsSunday = isSundayDate(date);
@@ -177,6 +194,12 @@ export function GiveAdvanceModal({
     setSubmitting(true);
     try {
       const cleanCustomCat = advanceType === 'custom' ? customCategory.trim() : undefined;
+      const isWeeklyFood = advanceType === 'weekly_food';
+      const batchId = isWeeklyFood ? `wf_${Date.now().toString(36)}` : undefined;
+      const approvalStatus = isWeeklyFood && requestAdminApproval ? 'pending_admin' : 'approved';
+      const submittedByName = session?.displayName || (isSupervisor ? 'Supervisor' : 'Admin');
+      const submittedByRole: 'admin' | 'supervisor' = isSupervisor ? 'supervisor' : 'admin';
+
       const result = await addAdvance({
         date,
         employeeId,
@@ -190,8 +213,12 @@ export function GiveAdvanceModal({
         proofImageDataUrl: proofImageDataUrl || undefined,
         projectId,
         towerId,
-        isSundayRun: advanceType === 'weekly_food' && dateIsSunday,
+        isSundayRun: isWeeklyFood && dateIsSunday,
         notes,
+        approvalStatus,
+        approvalBatchId: batchId,
+        submittedByName,
+        submittedByRole,
       });
 
       if (isAdmin && saveCustomPreset && cleanCustomCat) {
@@ -201,6 +228,22 @@ export function GiveAdvanceModal({
             customAdvanceCategories: [...existing, cleanCustomCat],
           }).catch(() => undefined);
         }
+      }
+
+      if (isWeeklyFood && sendWhatsappAfter) {
+        const projName = projects.find((p) => p.id === projectId)?.name || 'Project Site';
+        const twrName = towers.find((t) => t.id === towerId)?.name || '';
+        setWeeklyFoodWaPayload({
+          batchId: batchId!,
+          date,
+          siteLabel: twrName ? `${projName} (${twrName})` : projName,
+          submittedByName,
+          submittedByRole,
+          entries: [result.advance],
+          requiresAdminApproval: approvalStatus === 'pending_admin',
+        });
+        onClose();
+        return;
       }
 
       onClose();
@@ -495,6 +538,20 @@ export function GiveAdvanceModal({
             }}
           />
 
+          {advanceType === 'weekly_food' && (
+            <label className="flex items-center gap-2.5 p-2.5 bg-amber-50 border border-amber-200 rounded-md cursor-pointer">
+              <input
+                type="checkbox"
+                checked={requestAdminApproval}
+                onChange={(e) => setRequestAdminApproval(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-orange-700 focus:ring-orange-600"
+              />
+              <span className="text-xs text-amber-950">
+                <strong>Send to Admin for Approval &amp; Dispatch WhatsApp</strong> — queues entry in Admin Weekly Food Approval queue &amp; prepares Admin + Worker WhatsApp messages
+              </span>
+            </label>
+          )}
+
           <label className="flex items-center gap-2.5 pt-1 cursor-pointer">
             <input
               type="checkbox"
@@ -503,11 +560,17 @@ export function GiveAdvanceModal({
               className="w-4 h-4 rounded border-slate-300 text-orange-700 focus:ring-orange-600"
             />
             <span className="text-xs text-slate-700">
-              Prepare WhatsApp message for{' '}
-              <strong className="text-slate-900">
-                {selectedEmployee?.fullName || 'employee'}
-              </strong>{' '}
-              immediately after saving
+              {advanceType === 'weekly_food'
+                ? 'Open simultaneous Admin Approval + Crew WhatsApp Dispatch after saving'
+                : (
+                  <>
+                    Prepare WhatsApp message for{' '}
+                    <strong className="text-slate-900">
+                      {selectedEmployee?.fullName || 'employee'}
+                    </strong>{' '}
+                    immediately after saving
+                  </>
+                )}
             </span>
           </label>
 

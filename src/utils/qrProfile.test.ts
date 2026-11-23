@@ -4,12 +4,17 @@ import { createSeedWorkspace } from '../data/seedData';
 import {
   buildEmployeeQrPassData,
   buildEmployeeQrScanUrl,
+  buildSiteQrPassData,
+  buildSiteQrScanUrl,
   decodeQrSnapshot,
+  decodeSiteQrSnapshot,
   encodeQrSnapshot,
+  encodeSiteQrSnapshot,
   generateQrPassToken,
   generateQrSvgString,
   parseQrScanParams,
   resolveScannedQrProfile,
+  resolveScannedSiteQrProfile,
 } from './qrProfile';
 
 test('generateQrPassToken generates valid >=16 char Firestore IDs', () => {
@@ -76,6 +81,7 @@ test('encodeQrSnapshot and decodeQrSnapshot round-trip deployment & active work 
   const query = url.slice(url.indexOf('?'));
   const parsed = parseQrScanParams(query);
   assert.equal(parsed.hasQrScanRoute, true);
+  assert.equal(parsed.scanKind, 'employee');
   assert.equal(parsed.qrToken, 'qrp_testtoken1234567890');
   assert.equal(parsed.qrEmp, imran.id);
 
@@ -129,10 +135,80 @@ test('resolveScannedQrProfile prefers live workspace over cloud pass and URL sna
   assert.equal(snapshotResolved.profile?.empCode, 'AVY-MSN-001');
 });
 
-test('generateQrSvgString outputs valid SVG markup', async () => {
-  const svg = await generateQrSvgString('https://example.com/?qrEmp=emp_1');
+test('buildSiteQrPassData, snapshot encoding, URL parsing, and live/offline site resolution work end-to-end', () => {
+  const ws = createSeedWorkspace('local-avy-infra');
+  const proj = ws.projects.find((p) => p.id === 'proj_skyline_heights')!;
+  const towerA = ws.towers.find((t) => t.id === 'twr_skyline_a')!;
+
+  const sitePass = buildSiteQrPassData({
+    project: proj,
+    tower: towerA,
+    companyName: ws.companyProfile.companyName,
+    checkpointLabel: 'Tower Entrance',
+    customTitle: 'Gate Check-In Point',
+    customSubtitle: 'Scan on entry & shift handover',
+    employees: ws.employees,
+    flats: ws.flats,
+    attendance: ws.attendance,
+    todayIso: '2026-11-17',
+  });
+
+  assert.equal(sitePass.projectId, proj.id);
+  assert.equal(sitePass.towerId, towerA.id);
+  assert.equal(sitePass.towerName, 'Tower A');
+  assert.equal(sitePass.checkpointLabel, 'Tower Entrance');
+  assert.ok(sitePass.totalFlats > 0);
+
+  const siteUrl = buildSiteQrScanUrl({
+    origin: 'https://avy-infra.example.com',
+    passData: sitePass,
+  });
+  assert.ok(siteUrl.includes(`qrSite=${proj.id}`));
+  assert.ok(siteUrl.includes(`qrTower=${towerA.id}`));
+
+  const parsed = parseQrScanParams(siteUrl.slice(siteUrl.indexOf('?')));
+  assert.equal(parsed.hasQrScanRoute, true);
+  assert.equal(parsed.scanKind, 'site');
+  assert.equal(parsed.qrSite, proj.id);
+  assert.equal(parsed.qrTower, towerA.id);
+
+  const encoded = encodeSiteQrSnapshot(sitePass);
+  const decoded = decodeSiteQrSnapshot(encoded);
+  assert.ok(decoded);
+  assert.equal(decoded?.projectName, proj.name);
+  assert.equal(decoded?.checkpointLabel, 'Tower Entrance');
+  assert.equal(decoded?.customTitle, 'Gate Check-In Point');
+  assert.equal(decodeSiteQrSnapshot('invalid!!!'), null);
+
+  // Offline / standalone fallback
+  const snapshotOnly = resolveScannedSiteQrProfile({
+    scanParams: parsed,
+    liveWorkspace: null,
+    todayIso: '2026-11-17',
+  });
+  assert.equal(snapshotOnly.source, 'qr_snapshot');
+  assert.equal(snapshotOnly.siteProfile?.projectName, proj.name);
+  assert.equal(snapshotOnly.siteProfile?.customTitle, 'Gate Check-In Point');
+
+  // Live workspace overrides stale snapshot counts while preserving checkpoint metadata
+  const liveResolved = resolveScannedSiteQrProfile({
+    scanParams: parsed,
+    liveWorkspace: ws,
+    todayIso: '2026-11-17',
+  });
+  assert.equal(liveResolved.source, 'live_workspace');
+  assert.equal(liveResolved.siteProfile?.towerName, 'Tower A');
+  assert.equal(liveResolved.siteProfile?.checkpointLabel, 'Tower Entrance');
+});
+
+test('generateQrSvgString outputs valid SVG markup with custom color and error correction', async () => {
+  const svg = await generateQrSvgString('https://example.com/?qrEmp=emp_1', {
+    errorCorrectionLevel: 'H',
+    darkColor: '#064e3b',
+  });
   assert.ok(svg.includes('<svg'));
   assert.ok(svg.includes('</svg>'));
+  assert.ok(svg.toLowerCase().includes('#064e3b'));
 });
 
 test('parseQrScanParams returns hasQrScanRoute=false for empty or unrelated search strings', () => {

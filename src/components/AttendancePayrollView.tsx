@@ -7,12 +7,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Download,
   Eye,
   FileSpreadsheet,
   History,
   IdCard,
   Lock,
+  LogOut,
   MessageSquare,
   Pencil,
   Plus,
@@ -25,10 +27,12 @@ import {
   Trash2,
   Wallet,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { getTodayIso } from '../data/seedData';
 import type {
+  AdvanceEntry,
   AdvanceType,
   AttendanceRecord,
   AttendanceStatus,
@@ -37,6 +41,7 @@ import type {
   WhatsappMessagePayload,
 } from '../types/avy';
 import {
+  canViewEmployeeFixedSalary,
   getScopedAdvances,
   getScopedAssignments,
   getScopedAttendance,
@@ -56,13 +61,17 @@ import {
   computeSingleEmployeeAttendanceCard,
   computeTowerAttendanceSummary,
   computeTowerFoodExpenseBreakdown,
+  computeWorkedHoursFromInOut,
   formatDurationBreakdown,
   formatTowerAttendanceWhatsappMessage,
+  getCurrentHHMM,
   isSundayDate,
+  normalizeHHMM,
 } from '../utils/operations';
 import {
   ATTENDANCE_STATUS_LABELS,
   buildEmployeePayrollExpenseCsv,
+  buildMonthlyAttendanceAndPayrollCsv,
   computeEmployeePayroll,
   computeMonthlyAttendanceMatrix,
   computePayrollLedgerOverview,
@@ -75,6 +84,13 @@ import {
   type PayrollLedgerSortKey,
 } from '../utils/payroll';
 import { evaluateWeeklyFoodAdvance, formatElapsedDurationLabel } from '../utils/foodFollowUp';
+import {
+  buildWeeklyFoodDecisionWhatsappMessage,
+  buildWhatsappDirectUrl,
+  getEffectiveAdvanceApprovalStatus,
+  groupWeeklyFoodApprovalBatches,
+  resolveAdminApprovalContact,
+} from '../utils/weeklyFoodApproval';
 import {
   getWorkStatusBadgeClass,
   getWorkStatusLabel,
@@ -91,6 +107,10 @@ import { PrintPreviewOverlay } from './PrintPreviewOverlay';
 import { PrintableAttendanceCardSheet } from './PrintableAttendanceCardSheet';
 import { QuickScanAttendanceModal } from './QuickScanAttendanceModal';
 import { SupervisorAnalyticsPanel } from './SupervisorAnalyticsPanel';
+import {
+  WeeklyFoodApprovalWhatsappModal,
+  type WeeklyFoodApprovalModalPayload,
+} from './WeeklyFoodApprovalWhatsappModal';
 
 type PayrollTab = 'attendance' | 'employee_card' | 'monthly' | 'advances' | 'payroll' | 'history';
 
@@ -128,17 +148,21 @@ export function AttendancePayrollView({
     settlements,
     markAttendance,
     editLockedAttendance,
+    punchAttendanceOut,
     bulkMarkAttendancePresent,
     deleteAttendanceRecord,
     addSundayWeeklyFoodBatch,
+    reviewWeeklyFoodApproval,
     completeAssignment,
     recordSettlement,
     acknowledgeAdvance,
+    updateAdvance,
     deleteAdvance,
   } = useStore();
 
   const isAdmin = isAdminSession(session);
   const isSupervisor = isSupervisorSession(session);
+  const hideSalary = !canViewEmployeeFixedSalary(session);
 
   const projects = useMemo(
     () => getScopedProjects(session, rawProjects, rawTowers),
@@ -164,6 +188,11 @@ export function AttendancePayrollView({
 
   const today = getTodayIso();
   const [activeTab, setActiveTab] = useState<PayrollTab>('attendance');
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'payroll') {
+      setActiveTab('attendance');
+    }
+  }, [isAdmin, activeTab]);
   const [selectedDate, setSelectedDate] = useState(today);
   const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7));
   const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id || 'all');
@@ -179,6 +208,8 @@ export function AttendancePayrollView({
     record: AttendanceRecord;
   } | null>(null);
   const [editAttStatus, setEditAttStatus] = useState<AttendanceStatus>('present');
+  const [editAttInTime, setEditAttInTime] = useState('');
+  const [editAttOutTime, setEditAttOutTime] = useState('');
   const [editAttOt, setEditAttOt] = useState('0');
   const [editAttNotes, setEditAttNotes] = useState('');
   const [editAttReason, setEditAttReason] = useState('');
@@ -193,11 +224,24 @@ export function AttendancePayrollView({
   const [cardStatus, setCardStatus] = useState<AttendanceStatus>('present');
   const [cardProjectId, setCardProjectId] = useState<string>(employees[0]?.currentProjectId || projects[0]?.id || '');
   const [cardTowerId, setCardTowerId] = useState<string>(employees[0]?.currentTowerId || '');
+  const [cardInTime, setCardInTime] = useState<string>('');
+  const [cardOutTime, setCardOutTime] = useState<string>('');
   const [cardOtHours, setCardOtHours] = useState<string>('0');
   const [cardNotes, setCardNotes] = useState<string>('');
   const [cardSavedMsg, setCardSavedMsg] = useState<string>('');
   const [cardError, setCardError] = useState<string>('');
   const [cardSaving, setCardSaving] = useState(false);
+
+  // Admin-only Edit Advance Modal state
+  const [editingAdvance, setEditingAdvance] = useState<AdvanceEntry | null>(null);
+  const [editAdvDate, setEditAdvDate] = useState('');
+  const [editAdvType, setEditAdvType] = useState<AdvanceType>('daily_food');
+  const [editAdvCustomCategory, setEditAdvCustomCategory] = useState('');
+  const [editAdvAmount, setEditAdvAmount] = useState('');
+  const [editAdvMode, setEditAdvMode] = useState<PaymentMode>('cash');
+  const [editAdvNotes, setEditAdvNotes] = useState('');
+  const [editAdvError, setEditAdvError] = useState('');
+  const [editAdvSaving, setEditAdvSaving] = useState(false);
 
   // Food & Cash Advances filters + Sunday Weekly Food Batch
   const [advTypeFilter, setAdvTypeFilter] = useState<'all' | AdvanceType>('all');
@@ -211,7 +255,15 @@ export function AttendancePayrollView({
   const [sundayBatchMode, setSundayBatchMode] = useState<PaymentMode>('cash');
   const [sundayBatchNotes, setSundayBatchNotes] = useState('Sunday Weekly Food Advance Run');
   const [sundayAmounts, setSundayAmounts] = useState<Record<string, { checked: boolean; amount: string }>>({});
+  const [sundayRequireAdminApproval, setSundayRequireAdminApproval] = useState(true);
   const [savingSundayBatch, setSavingSundayBatch] = useState(false);
+  const [weeklyFoodWaModal, setWeeklyFoodWaModal] =
+    useState<WeeklyFoodApprovalModalPayload | null>(null);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const pendingFoodBatches = useMemo(
+    () => groupWeeklyFoodApprovalBatches(rawAdvances, 'pending_admin'),
+    [rawAdvances]
+  );
 
   const [historySearch, setHistorySearch] = useState('');
 
@@ -304,6 +356,8 @@ export function AttendancePayrollView({
   const openEditAttendanceModal = (emp: Employee, date: string, record: AttendanceRecord) => {
     setEditingAttModal({ employee: emp, date, record });
     setEditAttStatus(record.status);
+    setEditAttInTime(record.inTime || '');
+    setEditAttOutTime(record.outTime || '');
     setEditAttOt(String(record.overtimeHours || 0));
     setEditAttNotes(record.notes || '');
     setEditAttReason('');
@@ -327,6 +381,8 @@ export function AttendancePayrollView({
           '',
         towerId: editingAttModal.record.towerId || editingAttModal.employee.currentTowerId || undefined,
         status: editAttStatus,
+        inTime: editAttStatus === 'absent' ? '' : normalizeHHMM(editAttInTime),
+        outTime: editAttStatus === 'absent' ? '' : normalizeHHMM(editAttOutTime),
         overtimeHours: editAttStatus === 'absent' ? 0 : Number(editAttOt) || 0,
         notes: editAttNotes.trim(),
         editReason: editAttReason.trim(),
@@ -343,18 +399,61 @@ export function AttendancePayrollView({
     }
   };
 
+  const openEditAdvanceModal = (adv: AdvanceEntry) => {
+    if (!isAdmin || hideSalary) return;
+    setEditingAdvance(adv);
+    setEditAdvDate(adv.date);
+    setEditAdvType(adv.advanceType);
+    setEditAdvCustomCategory(adv.customCategory || '');
+    setEditAdvAmount(String(adv.amount));
+    setEditAdvMode(adv.paymentMode);
+    setEditAdvNotes(adv.notes || '');
+    setEditAdvError('');
+  };
+
+  const handleSaveEditedAdvance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAdvance || !isAdmin || hideSalary) return;
+    const numericAmount = Number(editAdvAmount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      setEditAdvError('Enter a valid amount greater than 0.');
+      return;
+    }
+    setEditAdvError('');
+    setEditAdvSaving(true);
+    try {
+      await updateAdvance(editingAdvance.id, {
+        date: editAdvDate || editingAdvance.date,
+        advanceType: editAdvType,
+        customCategory: editAdvType === 'custom' ? editAdvCustomCategory.trim() : '',
+        amount: numericAmount,
+        paymentMode: editAdvMode,
+        notes: editAdvNotes.trim(),
+      });
+      setEditingAdvance(null);
+    } catch (err) {
+      setEditAdvError(err instanceof Error ? err.message : 'Unable to update advance.');
+    } finally {
+      setEditAdvSaving(false);
+    }
+  };
+
   useEffect(() => {
     if (!cardEmployee) return;
     if (cardDayRecord) {
       setCardStatus(cardDayRecord.status);
       setCardProjectId(cardDayRecord.projectId || cardEmployee.currentProjectId || projects[0]?.id || '');
       setCardTowerId(cardDayRecord.towerId || cardEmployee.currentTowerId || '');
+      setCardInTime(cardDayRecord.inTime || '');
+      setCardOutTime(cardDayRecord.outTime || '');
       setCardOtHours(String(cardDayRecord.overtimeHours || 0));
       setCardNotes(cardDayRecord.notes || '');
     } else {
       setCardStatus('present');
       setCardProjectId(cardEmployee.currentProjectId || projects[0]?.id || '');
       setCardTowerId(cardEmployee.currentTowerId || '');
+      setCardInTime('');
+      setCardOutTime('');
       setCardOtHours('0');
       setCardNotes('');
     }
@@ -561,6 +660,7 @@ export function AttendancePayrollView({
       absentNames: towerAttendanceSummary.absentList.map(formatItem),
       unmarkedNames: towerAttendanceSummary.unmarkedList.map(formatItem),
       totalWageText: formatINR(towerAttendanceSummary.dailyWageTotal),
+      hideWages: hideSalary,
     });
 
     triggerDownloadBlob(blob, fileName);
@@ -667,7 +767,8 @@ export function AttendancePayrollView({
       monthlyMatrix,
       siteName,
       companyName,
-      singleEmployeeId
+      singleEmployeeId,
+      { hideWages: hideSalary }
     );
 
     onTriggerWhatsapp({
@@ -684,6 +785,27 @@ export function AttendancePayrollView({
       }`,
       message,
     });
+  };
+
+  const handleDownloadMonthlyPayrollCsv = () => {
+    const exportMonth = activeTab === 'employee_card' ? cardMonth : selectedMonth;
+    const projectFilterForExport =
+      activeTab === 'monthly'
+        ? monthlyProjectFilter
+        : activeTab === 'payroll'
+          ? payrollProjectFilter
+          : selectedProjectId;
+    const { csv, fileName } = buildMonthlyAttendanceAndPayrollCsv({
+      yearMonth: exportMonth,
+      employees,
+      attendance,
+      advances,
+      settlements,
+      projectIdFilter: projectFilterForExport,
+      hideSalary,
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    triggerDownloadBlob(blob, fileName);
   };
 
   const openSundayBatchModal = () => {
@@ -705,6 +827,7 @@ export function AttendancePayrollView({
       };
     }
     setSundayAmounts(map);
+    setSundayRequireAdminApproval(true);
     setShowSundayBatchModal(true);
   };
 
@@ -728,17 +851,38 @@ export function AttendancePayrollView({
 
     if (entries.length === 0) return;
 
+    const batchId = `wfr_${Date.now().toString(36)}`;
+    const approvalStatus = sundayRequireAdminApproval ? 'pending_admin' : 'approved';
+    const projName =
+      projects.find((p) => p.id === sundayBatchProjectId)?.name || 'All Projects';
+    const twrName =
+      sundayBatchTowerId !== 'all'
+        ? towers.find((t) => t.id === sundayBatchTowerId)?.name || ''
+        : '';
+    const siteLabel = twrName ? `${projName} (${twrName})` : projName;
+
     setSavingSundayBatch(true);
     try {
-      await addSundayWeeklyFoodBatch({
+      const createdEntries = await addSundayWeeklyFoodBatch({
         date: sundayBatchDate,
         projectId: sundayBatchProjectId || undefined,
         towerId: sundayBatchTowerId !== 'all' ? sundayBatchTowerId : undefined,
         entries,
         paymentMode: sundayBatchMode,
         notes: sundayBatchNotes,
+        approvalStatus,
+        approvalBatchId: batchId,
       });
       setShowSundayBatchModal(false);
+      setWeeklyFoodWaModal({
+        batchId,
+        date: sundayBatchDate,
+        siteLabel,
+        submittedByName: session?.displayName || (isSupervisor ? 'Supervisor' : 'Admin'),
+        submittedByRole: isSupervisor ? 'supervisor' : 'admin',
+        entries: createdEntries,
+        requiresAdminApproval: sundayRequireAdminApproval,
+      });
     } finally {
       setSavingSundayBatch(false);
     }
@@ -902,14 +1046,28 @@ export function AttendancePayrollView({
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            Attendance, Monthly Register &amp; Payroll
+            {hideSalary
+              ? 'Tower Attendance & Food Advances'
+              : 'Attendance, Monthly Register & Payroll'}
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Tower-wise daily &amp; monthly attendance with Present/Absent PDF export, Sunday weekly food advances, and payroll settlement.
+            {hideSalary
+              ? 'Tower-wise daily & monthly attendance with Present/Absent PDF export and Sunday weekly food advances.'
+              : 'Tower-wise daily & monthly attendance with Present/Absent PDF export, Sunday weekly food advances, and payroll settlement.'}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleDownloadMonthlyPayrollCsv}
+            data-testid="download-csv-btn"
+            title={`Download ${monthlyMatrix.monthLabel} attendance register and payroll CSV`}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
+          >
+            <Download className="w-4 h-4 text-orange-700" aria-hidden="true" />
+            <span>Download CSV</span>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -925,7 +1083,8 @@ export function AttendancePayrollView({
                   matrix,
                   cardEmployee.currentProjectName || 'All Sites',
                   companyName,
-                  cardEmployee.id
+                  cardEmployee.id,
+                  { hideWages: hideSalary }
                 );
                 onTriggerWhatsapp({
                   title: `Share Employee Attendance Card (${matrix.monthLabel})`,
@@ -1090,7 +1249,8 @@ export function AttendancePayrollView({
                     bulkMarkAttendancePresent(
                       selectedDate,
                       selectedProjectId === 'all' ? projects[0]?.id || '' : selectedProjectId,
-                      selectedTowerId !== 'all' ? selectedTowerId : undefined
+                      selectedTowerId !== 'all' ? selectedTowerId : undefined,
+                      getCurrentHHMM()
                     )
                   }
                   className="px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap"
@@ -1102,7 +1262,11 @@ export function AttendancePayrollView({
 
             {/* Tower Attendance Status Strip + Present/Absent Quick List */}
             <div className="pt-3 border-t border-slate-100 space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <div
+                className={`grid grid-cols-2 ${
+                  hideSalary ? 'sm:grid-cols-4' : 'sm:grid-cols-5'
+                } gap-3`}
+              >
                 <div className="p-2.5 bg-emerald-50/70 border border-emerald-200 rounded-md">
                   <div className="text-[11px] font-medium text-emerald-800">Present Crew</div>
                   <div className="text-lg font-mono font-bold text-emerald-900 tabular-nums">
@@ -1127,12 +1291,14 @@ export function AttendancePayrollView({
                     {towerAttendanceSummary.unmarkedCount}
                   </div>
                 </div>
-                <div className="p-2.5 bg-slate-900 text-white rounded-md">
-                  <div className="text-[11px] text-slate-300">Day Wage Total</div>
-                  <div className="text-lg font-mono font-bold tabular-nums">
-                    {formatINR(towerAttendanceSummary.dailyWageTotal)}
+                {!hideSalary && (
+                  <div className="p-2.5 bg-slate-900 text-white rounded-md">
+                    <div className="text-[11px] text-slate-300">Day Wage Total</div>
+                    <div className="text-lg font-mono font-bold tabular-nums">
+                      {formatINR(towerAttendanceSummary.dailyWageTotal)}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Present vs Absent Name Lists & Tower Contacts */}
@@ -1210,15 +1376,16 @@ export function AttendancePayrollView({
                     <th className="py-2.5 px-4">Employee ID</th>
                     <th className="py-2.5 px-3">Name, Role &amp; Tower</th>
                     <th className="py-2.5 px-3">Attendance Status</th>
+                    <th className="py-2.5 px-3">In / Out Time</th>
                     <th className="py-2.5 px-3 text-right">OT Hours</th>
-                    <th className="py-2.5 px-3 text-right">Day Wage Earned</th>
+                    {!hideSalary && <th className="py-2.5 px-3 text-right">Day Wage Earned</th>}
                     <th className="py-2.5 px-4 text-right">Lock / Edit</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {scopedDailyEmployees.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-10 text-center text-slate-500">
+                      <td colSpan={hideSalary ? 6 : 7} className="py-10 text-center text-slate-500">
                         No active crew currently allocated to this Project / Tower filter. Use &ldquo;Allocate Crew to Tower&rdquo; in Workforce or select &ldquo;All Towers&rdquo;.
                       </td>
                     </tr>
@@ -1235,6 +1402,7 @@ export function AttendancePayrollView({
                           : emp.currentProjectId || projects[0]?.id || '';
                       const effectiveTowerId =
                         selectedTowerId !== 'all' ? selectedTowerId : emp.currentTowerId || undefined;
+                      const workedInfo = computeWorkedHoursFromInOut(rec?.inTime, rec?.outTime);
 
                       return (
                         <tr key={emp.id} className="hover:bg-slate-50/70">
@@ -1244,7 +1412,8 @@ export function AttendancePayrollView({
                           <td className="py-3 px-3">
                             <div className="font-medium text-slate-900">{emp.fullName}</div>
                             <div className="text-xs text-slate-500">
-                              {emp.role} · Rate {formatINR(emp.dailyRate)}/day
+                              {emp.role}
+                              {!hideSalary ? ` · Rate ${formatINR(emp.dailyRate)}/day` : ''}
                               {emp.currentTowerName ? ` · ${emp.currentTowerName}` : ''}
                             </div>
                             {rec?.editReason && (
@@ -1284,6 +1453,11 @@ export function AttendancePayrollView({
                                           projectId: effectiveProjId,
                                           towerId: effectiveTowerId,
                                           status: btn.id,
+                                          inTime:
+                                            btn.id === 'absent'
+                                              ? ''
+                                              : rec?.inTime || getCurrentHHMM(),
+                                          outTime: btn.id === 'absent' ? '' : rec?.outTime || '',
                                           overtimeHours: btn.id === 'absent' ? 0 : otHours,
                                         });
                                       } catch (err) {
@@ -1304,6 +1478,101 @@ export function AttendancePayrollView({
                               })}
                             </div>
                           </td>
+                          <td className="py-3 px-3 whitespace-nowrap">
+                            {rec && currentStatus !== 'absent' ? (
+                              <div className="space-y-1">
+                                <div className="inline-flex items-center gap-1.5">
+                                  <input
+                                    type="time"
+                                    aria-label={`In time for ${emp.fullName}`}
+                                    value={rec.inTime || ''}
+                                    disabled={isLockedForUser}
+                                    onChange={async (e) => {
+                                      setAttActionError('');
+                                      try {
+                                        await markAttendance({
+                                          date: selectedDate,
+                                          employeeId: emp.id,
+                                          projectId: effectiveProjId,
+                                          towerId: effectiveTowerId,
+                                          status: currentStatus || 'present',
+                                          inTime: e.target.value,
+                                          outTime: rec.outTime || '',
+                                          overtimeHours: otHours,
+                                        });
+                                      } catch (err) {
+                                        setAttActionError(
+                                          err instanceof Error ? err.message : 'Attendance action blocked.'
+                                        );
+                                      }
+                                    }}
+                                    className="px-1.5 py-0.5 text-[11px] font-mono border border-slate-300 rounded disabled:bg-slate-100"
+                                  />
+                                  <span className="text-[10px] text-slate-400">→</span>
+                                  <input
+                                    type="time"
+                                    aria-label={`Out time for ${emp.fullName}`}
+                                    value={rec.outTime || ''}
+                                    disabled={isLockedForUser}
+                                    onChange={async (e) => {
+                                      setAttActionError('');
+                                      try {
+                                        await markAttendance({
+                                          date: selectedDate,
+                                          employeeId: emp.id,
+                                          projectId: effectiveProjId,
+                                          towerId: effectiveTowerId,
+                                          status: currentStatus || 'present',
+                                          inTime: rec.inTime || '',
+                                          outTime: e.target.value,
+                                          overtimeHours: otHours,
+                                        });
+                                      } catch (err) {
+                                        setAttActionError(
+                                          err instanceof Error ? err.message : 'Attendance action blocked.'
+                                        );
+                                      }
+                                    }}
+                                    className="px-1.5 py-0.5 text-[11px] font-mono border border-slate-300 rounded disabled:bg-slate-100"
+                                  />
+                                  {!rec.outTime && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        setAttActionError('');
+                                        try {
+                                          await punchAttendanceOut({
+                                            attendanceId: rec.id,
+                                            employeeId: emp.id,
+                                            date: selectedDate,
+                                            outTime: getCurrentHHMM(),
+                                          });
+                                        } catch (err) {
+                                          setAttActionError(
+                                            err instanceof Error ? err.message : 'Could not punch out.'
+                                          );
+                                        }
+                                      }}
+                                      aria-label={`Check Out ${emp.fullName}`}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-amber-900 bg-amber-100 border border-amber-300 rounded hover:bg-amber-200"
+                                    >
+                                      <LogOut className="w-3 h-3" aria-hidden="true" />
+                                      <span>Check Out</span>
+                                    </button>
+                                  )}
+                                </div>
+                                {workedInfo.valid && (
+                                  <div className="text-[10px] font-mono text-slate-500">
+                                    Shift: {workedInfo.totalHours}h
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">
+                                {currentStatus === 'absent' ? 'Absent' : 'Mark status first'}
+                              </span>
+                            )}
+                          </td>
                           <td className="py-3 px-3 text-right">
                             <input
                               type="number"
@@ -1322,6 +1591,8 @@ export function AttendancePayrollView({
                                     projectId: effectiveProjId,
                                     towerId: effectiveTowerId,
                                     status: currentStatus || 'present',
+                                    inTime: rec?.inTime || '',
+                                    outTime: rec?.outTime || '',
                                     overtimeHours: Number(e.target.value) || 0,
                                   });
                                 } catch (err) {
@@ -1333,9 +1604,11 @@ export function AttendancePayrollView({
                               className="w-16 px-2 py-1 text-right text-xs font-mono tabular-nums border border-slate-300 rounded disabled:bg-slate-100"
                             />
                           </td>
-                          <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                            {formatINR(earned)}
-                          </td>
+                          {!hideSalary && (
+                            <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                              {formatINR(earned)}
+                            </td>
+                          )}
                           <td className="py-3 px-4 text-right whitespace-nowrap">
                             {rec ? (
                               <div className="inline-flex items-center gap-1.5">
@@ -1472,6 +1745,7 @@ export function AttendancePayrollView({
                             projectId: projId,
                             towerId: twrId,
                             status: 'present',
+                            inTime: getCurrentHHMM(),
                             overtimeHours: 0,
                             notes: 'Marked from Employee Attendance Card',
                           });
@@ -1488,6 +1762,35 @@ export function AttendancePayrollView({
                     >
                       {todayCardRecord && isSupervisor ? 'Today Locked' : 'Mark Today Present'}
                     </button>
+                    {todayCardRecord &&
+                      todayCardRecord.status !== 'absent' &&
+                      !todayCardRecord.outTime && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setCardError('');
+                            setCardSavedMsg('');
+                            try {
+                              const outNow = getCurrentHHMM();
+                              await punchAttendanceOut({
+                                attendanceId: todayCardRecord.id,
+                                employeeId: cardEmployee.id,
+                                date: today,
+                                outTime: outNow,
+                              });
+                              setCardSavedMsg(`Checked out for Today (${today}) at ${outNow}`);
+                            } catch (err) {
+                              setCardError(
+                                err instanceof Error ? err.message : 'Unable to punch out.'
+                              );
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-950 bg-amber-100 border border-amber-300 rounded-md hover:bg-amber-200 whitespace-nowrap"
+                        >
+                          <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Punch Out Today</span>
+                        </button>
+                      )}
                     <button
                       type="button"
                       onClick={() => setShowPrintCardPreview(true)}
@@ -1520,6 +1823,7 @@ export function AttendancePayrollView({
                           overtimeHours: employeeCardData.overtimeHours,
                           totalWagesEarnedText: formatINR(employeeCardData.totalWagesEarned),
                           monthAdvancesText: formatINR(employeeCardData.monthAdvancesTotal),
+                          hideSalaryRates: hideSalary,
                           days: employeeCardData.days.map((d) => ({
                             day: d.day,
                             date: d.date,
@@ -1576,13 +1880,20 @@ export function AttendancePayrollView({
                           ? `${cardEmployee.currentProjectName}${
                               cardEmployee.currentTowerName ? ` · ${cardEmployee.currentTowerName}` : ''
                             }`
-                          : 'No site assigned'}{' '}
-                        · Rate {formatINR(cardEmployee.dailyRate)}/day · OT {formatINR(cardEmployee.overtimeRate)}/hr
+                          : 'No site assigned'}
+                        {!hideSalary &&
+                          ` · Rate ${formatINR(cardEmployee.dailyRate)}/day · OT ${formatINR(
+                            cardEmployee.overtimeRate
+                          )}/hr`}
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 shrink-0">
+                  <div
+                    className={`grid grid-cols-2 ${
+                      hideSalary ? 'sm:grid-cols-4' : 'sm:grid-cols-5'
+                    } gap-2.5 shrink-0`}
+                  >
                     <div className="px-3 py-2 bg-emerald-50/70 border border-emerald-200 rounded-md">
                       <div className="text-[11px] font-medium text-emerald-800">Present</div>
                       <div className="text-base font-mono font-bold text-emerald-900 tabular-nums">
@@ -1607,12 +1918,14 @@ export function AttendancePayrollView({
                         {employeeCardData.effectiveDays}d · {employeeCardData.overtimeHours}h
                       </div>
                     </div>
-                    <div className="px-3 py-2 bg-slate-900 text-white rounded-md">
-                      <div className="text-[11px] text-slate-300">Month Wages</div>
-                      <div className="text-base font-mono font-bold tabular-nums">
-                        {formatINR(employeeCardData.totalWagesEarned)}
+                    {!hideSalary && (
+                      <div className="px-3 py-2 bg-slate-900 text-white rounded-md">
+                        <div className="text-[11px] text-slate-300">Month Wages</div>
+                        <div className="text-base font-mono font-bold tabular-nums">
+                          {formatINR(employeeCardData.totalWagesEarned)}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1700,13 +2013,18 @@ export function AttendancePayrollView({
                             </span>
                           </div>
                           <div className="space-y-0.5 w-full overflow-hidden">
+                            {(cell.record?.inTime || cell.record?.outTime) && (
+                              <div className="text-[9.5px] font-mono text-slate-600 truncate">
+                                {cell.record.inTime || '--:--'}→{cell.record.outTime || '--:--'}
+                              </div>
+                            )}
                             {cell.overtimeHours > 0 && (
                               <div className="text-[10px] font-mono text-orange-800 font-semibold truncate">
                                 +{cell.overtimeHours}h OT
                               </div>
                             )}
                             <div className="text-[10px] font-mono tabular-nums truncate opacity-85">
-                              {cell.earned > 0
+                              {!hideSalary && cell.earned > 0
                                 ? formatINR(cell.earned)
                                 : cell.isSunday
                                   ? 'Sun'
@@ -1782,6 +2100,8 @@ export function AttendancePayrollView({
                               projectId: cardProjectId,
                               towerId: cardTowerId || undefined,
                               status: cardStatus,
+                              inTime: cardStatus === 'absent' ? '' : normalizeHHMM(cardInTime),
+                              outTime: cardStatus === 'absent' ? '' : normalizeHHMM(cardOutTime),
                               overtimeHours: cardStatus === 'absent' ? 0 : Number(cardOtHours) || 0,
                               notes: cardNotes,
                             });
@@ -1875,6 +2195,70 @@ export function AttendancePayrollView({
                             </select>
                           </div>
                         </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label htmlFor="card-in-time" className="block text-xs font-medium text-slate-700 mb-1">
+                              In Time (Check-In)
+                            </label>
+                            <input
+                              id="card-in-time"
+                              type="time"
+                              disabled={cardLocked || cardStatus === 'absent'}
+                              value={cardStatus === 'absent' ? '' : cardInTime}
+                              onChange={(e) => setCardInTime(e.target.value)}
+                              className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-md disabled:bg-slate-100"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label htmlFor="card-out-time" className="block text-xs font-medium text-slate-700">
+                                Out Time (Check-Out)
+                              </label>
+                              {cardDayRecord && cardDayRecord.status !== 'absent' && !cardDayRecord.outTime && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const outNow = getCurrentHHMM();
+                                    await punchAttendanceOut({
+                                      attendanceId: cardDayRecord.id,
+                                      employeeId: cardEmployee.id,
+                                      date: cardSelectedDate,
+                                      outTime: outNow,
+                                    });
+                                    setCardOutTime(outNow);
+                                    setCardSavedMsg(`Checked out on ${cardSelectedDate} at ${outNow}`);
+                                  }}
+                                  className="text-[10.5px] font-semibold text-amber-800 hover:underline"
+                                >
+                                  Punch Out Now
+                                </button>
+                              )}
+                            </div>
+                            <input
+                              id="card-out-time"
+                              type="time"
+                              disabled={cardLocked || cardStatus === 'absent'}
+                              value={cardStatus === 'absent' ? '' : cardOutTime}
+                              onChange={(e) => setCardOutTime(e.target.value)}
+                              className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-md disabled:bg-slate-100"
+                            />
+                          </div>
+                        </div>
+
+                        {(() => {
+                          const dur = computeWorkedHoursFromInOut(cardInTime, cardOutTime);
+                          if (!dur.valid || cardStatus === 'absent') return null;
+                          return (
+                            <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-600 bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5">
+                              <Clock className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                              <span>
+                                Shift duration: <strong>{dur.totalHours}h</strong>
+                                {dur.overtimeHoursEstimate > 0 ? ` (Est. +${dur.overtimeHoursEstimate}h OT over 9h)` : ''}
+                              </span>
+                            </div>
+                          );
+                        })()}
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
@@ -2014,18 +2398,29 @@ export function AttendancePayrollView({
               </div>
             </div>
 
-            <div className="flex items-center gap-3 text-xs text-slate-500 font-mono pb-1">
-              <span>
-                <span className="text-emerald-700 font-semibold">P</span>=Present
-              </span>
-              <span>·</span>
-              <span>
-                <span className="text-amber-700 font-semibold">HD</span>=Half Day
-              </span>
-              <span>·</span>
-              <span>
-                <span className="text-red-700 font-semibold">A</span>=Absent
-              </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-3 text-xs text-slate-500 font-mono">
+                <span>
+                  <span className="text-emerald-700 font-semibold">P</span>=Present
+                </span>
+                <span>·</span>
+                <span>
+                  <span className="text-amber-700 font-semibold">HD</span>=Half Day
+                </span>
+                <span>·</span>
+                <span>
+                  <span className="text-red-700 font-semibold">A</span>=Absent
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleDownloadMonthlyPayrollCsv}
+                data-testid="monthly-download-csv-btn"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                <span>Download CSV</span>
+              </button>
             </div>
           </div>
 
@@ -2045,7 +2440,7 @@ export function AttendancePayrollView({
                   <th className="py-2 px-1.5 text-right font-mono">HD</th>
                   <th className="py-2 px-1.5 text-right font-mono">A</th>
                   <th className="py-2 px-1.5 text-right font-mono">Eff</th>
-                  <th className="py-2 px-2 text-right font-mono">Earned</th>
+                  {!hideSalary && <th className="py-2 px-2 text-right font-mono">Earned</th>}
                   <th className="py-2 px-2.5 text-right sticky right-0 bg-slate-50 z-10 border-l border-slate-200">
                     Share
                   </th>
@@ -2103,9 +2498,11 @@ export function AttendancePayrollView({
                     <td className="py-2 px-1.5 text-right font-mono tabular-nums font-semibold text-slate-900">
                       {row.effectiveDays}d
                     </td>
-                    <td className="py-2 px-2 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                      {formatINR(row.totalWagesEarned)}
-                    </td>
+                    {!hideSalary && (
+                      <td className="py-2 px-2 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                        {formatINR(row.totalWagesEarned)}
+                      </td>
+                    )}
                     <td className="py-2 px-2.5 text-right whitespace-nowrap sticky right-0 bg-white z-10 border-l border-slate-200">
                       <button
                         type="button"
@@ -2245,6 +2642,107 @@ export function AttendancePayrollView({
               </div>
             )}
 
+            {isAdmin && pendingFoodBatches.length > 0 && (
+              <div
+                data-testid="payroll-admin-pending-food-approvals"
+                className="p-3.5 bg-amber-50/70 border border-amber-300 rounded-md space-y-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-amber-950">
+                    Admin Weekly Food Run Approval Queue ({pendingFoodBatches.length} batch
+                    {pendingFoodBatches.length === 1 ? '' : 'es'})
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {pendingFoodBatches.map((batch) => {
+                    const adminContact = resolveAdminApprovalContact(companyProfile);
+                    const supPhone =
+                      rawEmployees.find((e) => e.fullName === batch.submittedByName)?.phone ||
+                      adminContact.adminPhone;
+                    const approveWaUrl = buildWhatsappDirectUrl(
+                      supPhone,
+                      buildWeeklyFoodDecisionWhatsappMessage({
+                        companyName,
+                        decision: 'approved',
+                        batch,
+                        reviewedByName: session?.displayName || adminContact.adminName,
+                      })
+                    );
+                    const busy = approvalBusyId === batch.batchId;
+
+                    return (
+                      <div
+                        key={batch.batchId}
+                        className="p-2.5 bg-white border border-amber-200 rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-900">
+                            {batch.projectName} · {batch.towerName} ({batch.date})
+                          </div>
+                          <div className="text-slate-600">
+                            Submitted by <strong>{batch.submittedByName}</strong> ·{' '}
+                            {batch.entries.length} worker(s) ·{' '}
+                            <span className="font-mono font-semibold text-slate-900">
+                              {formatINR(batch.totalAmount)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={async () => {
+                              setApprovalBusyId(batch.batchId);
+                              try {
+                                await reviewWeeklyFoodApproval({
+                                  advanceIds: batch.entries.map((e) => e.id),
+                                  decision: 'approved',
+                                });
+                              } finally {
+                                setApprovalBusyId(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                            <span>Approve</span>
+                          </button>
+                          <a
+                            href={approveWaUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100"
+                          >
+                            <MessageSquare className="w-3 h-3" aria-hidden="true" />
+                            <span>Send WA</span>
+                          </a>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={async () => {
+                              setApprovalBusyId(batch.batchId);
+                              try {
+                                await reviewWeeklyFoodApproval({
+                                  advanceIds: batch.entries.map((e) => e.id),
+                                  decision: 'rejected',
+                                });
+                              } finally {
+                                setApprovalBusyId(null);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 font-medium text-red-700 bg-white border border-red-200 rounded hover:bg-red-50 disabled:opacity-50"
+                          >
+                            <XCircle className="w-3 h-3" aria-hidden="true" />
+                            <span>Reject</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-md">
                 <div className="text-[11px] font-medium text-slate-500">
@@ -2369,6 +2867,29 @@ export function AttendancePayrollView({
                               </span>
                               {adv.advanceType === 'weekly_food' &&
                                 (() => {
+                                  const appStatus = getEffectiveAdvanceApprovalStatus(adv);
+                                  if (appStatus === 'pending_admin') {
+                                    return (
+                                      <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 rounded">
+                                        Pending Admin Approval
+                                      </span>
+                                    );
+                                  }
+                                  if (appStatus === 'rejected') {
+                                    return (
+                                      <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-900 border border-red-300 rounded">
+                                        Rejected
+                                      </span>
+                                    );
+                                  }
+                                  return (
+                                    <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded">
+                                      Admin Approved
+                                    </span>
+                                  );
+                                })()}
+                              {adv.advanceType === 'weekly_food' &&
+                                (() => {
                                   const evalRes = evaluateWeeklyFoodAdvance(adv);
                                   if (evalRes.status === 'acknowledged') {
                                     return (
@@ -2471,7 +2992,8 @@ export function AttendancePayrollView({
                                     message: formatAdvanceWhatsappMessage(
                                       adv,
                                       payroll.netPayable,
-                                      companyName
+                                      companyName,
+                                      { hideNetBalance: hideSalary }
                                     ),
                                     advanceId: adv.id,
                                   });
@@ -2482,15 +3004,26 @@ export function AttendancePayrollView({
                                 <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
                                 <span>WA / Mail</span>
                               </button>
-                              {isAdmin && (
-                                <button
-                                  type="button"
-                                  onClick={() => deleteAdvance(adv.id)}
-                                  aria-label={`Delete advance for ${adv.employeeName} on ${adv.date}`}
-                                  className="p-1.5 text-slate-400 hover:text-red-700 rounded hover:bg-red-50"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                                </button>
+                              {isAdmin && !hideSalary && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditAdvanceModal(adv)}
+                                    aria-label={`Edit advance for ${adv.employeeName} on ${adv.date}`}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50"
+                                  >
+                                    <Pencil className="w-3 h-3" aria-hidden="true" />
+                                    <span>Edit</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteAdvance(adv.id)}
+                                    aria-label={`Delete advance for ${adv.employeeName} on ${adv.date}`}
+                                    className="p-1.5 text-slate-400 hover:text-red-700 rounded hover:bg-red-50"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                  </button>
+                                </>
                               )}
                             </div>
                           </td>
@@ -3095,7 +3628,7 @@ export function AttendancePayrollView({
                                                 <th className="py-1.5 px-3">Mode / App / UTR</th>
                                                 <th className="py-1.5 px-3">Notes</th>
                                                 <th className="py-1.5 px-3 text-right">Amount</th>
-                                                <th className="py-1.5 px-3 text-right">Proof</th>
+                                                <th className="py-1.5 px-3 text-right">Proof &amp; Actions</th>
                                               </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-100">
@@ -3127,30 +3660,54 @@ export function AttendancePayrollView({
                                                     {formatINR(adv.amount)}
                                                   </td>
                                                   <td className="py-2 px-3 text-right whitespace-nowrap">
-                                                    {adv.proofImageDataUrl ? (
-                                                      <button
-                                                        type="button"
-                                                        onClick={() =>
-                                                          setProofLightbox({
-                                                            title: `${sum.employee.fullName} — ${adv.categoryLabel}`,
-                                                            subtitle: `${adv.date} · ${sum.employee.empCode}`,
-                                                            imageDataUrl: adv.proofImageDataUrl!,
-                                                            paymentMode: adv.paymentMode,
-                                                            paymentApp: adv.paymentApp,
-                                                            transactionId: adv.transactionId,
-                                                            upiId: adv.upiId,
-                                                            amount: adv.amount,
-                                                            date: adv.date,
-                                                          })
-                                                        }
-                                                        className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
-                                                      >
-                                                        <Eye className="w-3 h-3" aria-hidden="true" />
-                                                        <span>Proof</span>
-                                                      </button>
-                                                    ) : (
-                                                      <span className="text-slate-400">—</span>
-                                                    )}
+                                                    <div className="inline-flex items-center gap-1.5">
+                                                      {adv.proofImageDataUrl ? (
+                                                        <button
+                                                          type="button"
+                                                          onClick={() =>
+                                                            setProofLightbox({
+                                                              title: `${sum.employee.fullName} — ${adv.categoryLabel}`,
+                                                              subtitle: `${adv.date} · ${sum.employee.empCode}`,
+                                                              imageDataUrl: adv.proofImageDataUrl!,
+                                                              paymentMode: adv.paymentMode,
+                                                              paymentApp: adv.paymentApp,
+                                                              transactionId: adv.transactionId,
+                                                              upiId: adv.upiId,
+                                                              amount: adv.amount,
+                                                              date: adv.date,
+                                                            })
+                                                          }
+                                                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
+                                                        >
+                                                          <Eye className="w-3 h-3" aria-hidden="true" />
+                                                          <span>Proof</span>
+                                                        </button>
+                                                      ) : null}
+                                                      {isAdmin && !hideSalary && (
+                                                        <>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => openEditAdvanceModal(adv)}
+                                                            aria-label={`Edit advance ${adv.categoryLabel} on ${adv.date}`}
+                                                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50"
+                                                          >
+                                                            <Pencil className="w-3 h-3" aria-hidden="true" />
+                                                            <span>Edit</span>
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => deleteAdvance(adv.id)}
+                                                            aria-label={`Remove advance ${adv.categoryLabel} on ${adv.date}`}
+                                                            className="p-1 text-slate-400 hover:text-red-700 rounded hover:bg-red-50"
+                                                          >
+                                                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                                          </button>
+                                                        </>
+                                                      )}
+                                                      {!adv.proofImageDataUrl && (!isAdmin || hideSalary) && (
+                                                        <span className="text-slate-400">—</span>
+                                                      )}
+                                                    </div>
                                                   </td>
                                                 </tr>
                                               ))}
@@ -3490,6 +4047,18 @@ export function AttendancePayrollView({
                 </div>
               </div>
 
+              <label className="flex items-center gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-md cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sundayRequireAdminApproval}
+                  onChange={(e) => setSundayRequireAdminApproval(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-orange-700 focus:ring-orange-600"
+                />
+                <span className="text-xs text-amber-950">
+                  <strong>Send to Admin for Approval &amp; Dispatch WhatsApp Simultaneously</strong> — queues batch for Admin approval and opens WhatsApp alerts for Admin &amp; crew right after submit
+                </span>
+              </label>
+
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
@@ -3503,7 +4072,11 @@ export function AttendancePayrollView({
                   disabled={savingSundayBatch}
                   className="px-4 py-2 text-sm font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 disabled:opacity-50"
                 >
-                  {savingSundayBatch ? 'Disbursing...' : 'Disburse Sunday Weekly Food Batch'}
+                  {savingSundayBatch
+                    ? 'Submitting...'
+                    : sundayRequireAdminApproval
+                      ? 'Submit Approval & Send WhatsApp'
+                      : 'Disburse Sunday Weekly Food Batch'}
                 </button>
               </div>
             </form>
@@ -3675,6 +4248,35 @@ export function AttendancePayrollView({
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-att-in" className="block text-xs font-medium text-slate-700 mb-1">
+                    In Time
+                  </label>
+                  <input
+                    id="edit-att-in"
+                    type="time"
+                    disabled={editAttStatus === 'absent'}
+                    value={editAttStatus === 'absent' ? '' : editAttInTime}
+                    onChange={(e) => setEditAttInTime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md disabled:bg-slate-100"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-att-out" className="block text-xs font-medium text-slate-700 mb-1">
+                    Out Time
+                  </label>
+                  <input
+                    id="edit-att-out"
+                    type="time"
+                    disabled={editAttStatus === 'absent'}
+                    value={editAttStatus === 'absent' ? '' : editAttOutTime}
+                    onChange={(e) => setEditAttOutTime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md disabled:bg-slate-100"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label htmlFor="edit-att-ot" className="block text-xs font-medium text-slate-700 mb-1">
                   Overtime Hours (OT)
@@ -3788,6 +4390,168 @@ export function AttendancePayrollView({
         />
       )}
 
+      {/* Admin-Only Edit Advance Modal */}
+      {editingAdvance && isAdmin && !hideSalary && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-adv-title"
+        >
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-orange-700" aria-hidden="true" />
+                <h2 id="edit-adv-title" className="text-base font-semibold text-slate-900">
+                  Edit Advance Entry (Admin)
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingAdvance(null)}
+                aria-label="Close edit advance modal"
+                className="p-2 text-slate-500 hover:text-slate-900 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditedAdvance} className="p-6 space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-md text-xs">
+                <div className="font-semibold text-slate-900">
+                  {editingAdvance.employeeName} ({editingAdvance.empCode})
+                </div>
+                <div className="text-slate-500 font-mono mt-0.5">
+                  Recorded: {editingAdvance.date} · {formatINR(editingAdvance.amount)}
+                </div>
+              </div>
+
+              {editAdvError && (
+                <div
+                  role="alert"
+                  className="p-3 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md"
+                >
+                  {editAdvError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-adv-date" className="block text-xs font-medium text-slate-700 mb-1">
+                    Date
+                  </label>
+                  <input
+                    id="edit-adv-date"
+                    type="date"
+                    required
+                    value={editAdvDate}
+                    onChange={(e) => setEditAdvDate(e.target.value)}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-adv-amount" className="block text-xs font-medium text-slate-700 mb-1">
+                    Corrected Amount (INR)
+                  </label>
+                  <input
+                    id="edit-adv-amount"
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    value={editAdvAmount}
+                    onChange={(e) => setEditAdvAmount(e.target.value)}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-adv-type" className="block text-xs font-medium text-slate-700 mb-1">
+                    Advance Type
+                  </label>
+                  <select
+                    id="edit-adv-type"
+                    value={editAdvType}
+                    onChange={(e) => setEditAdvType(e.target.value as AdvanceType)}
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-md"
+                  >
+                    <option value="daily_food">Daily Food</option>
+                    <option value="weekly_food">Weekly Food</option>
+                    <option value="cash_advance">Cash Advance</option>
+                    <option value="custom">Custom Category</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="edit-adv-mode" className="block text-xs font-medium text-slate-700 mb-1">
+                    Payment Mode
+                  </label>
+                  <select
+                    id="edit-adv-mode"
+                    value={editAdvMode}
+                    onChange={(e) => setEditAdvMode(e.target.value as PaymentMode)}
+                    className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-md"
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="upi">UPI</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                  </select>
+                </div>
+              </div>
+
+              {editAdvType === 'custom' && (
+                <div>
+                  <label htmlFor="edit-adv-custom" className="block text-xs font-medium text-slate-700 mb-1">
+                    Custom Category Label
+                  </label>
+                  <input
+                    id="edit-adv-custom"
+                    type="text"
+                    required
+                    value={editAdvCustomCategory}
+                    onChange={(e) => setEditAdvCustomCategory(e.target.value)}
+                    placeholder="e.g. Room Rent / Medical / Travel"
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="edit-adv-notes" className="block text-xs font-medium text-slate-700 mb-1">
+                  Notes / Correction Reason
+                </label>
+                <input
+                  id="edit-adv-notes"
+                  type="text"
+                  value={editAdvNotes}
+                  onChange={(e) => setEditAdvNotes(e.target.value)}
+                  placeholder="Optional note or correction remark"
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingAdvance(null)}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editAdvSaving}
+                  className="px-4 py-2 text-sm font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 disabled:opacity-50"
+                >
+                  {editAdvSaving ? 'Saving...' : 'Save Corrected Advance'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Quick Scan Attendance Session Modal */}
       <QuickScanAttendanceModal
         open={showQuickScanModal}
@@ -3801,6 +4565,7 @@ export function AttendancePayrollView({
         defaultProjectId={selectedProjectId}
         defaultTowerId={selectedTowerId}
         onMarkAttendance={markAttendance}
+        onPunchOut={punchAttendanceOut}
         onUndoAttendanceScan={deleteAttendanceRecord}
       />
 
@@ -3834,6 +4599,7 @@ export function AttendancePayrollView({
               overtimeHours: employeeCardData.overtimeHours,
               totalWagesEarnedText: formatINR(employeeCardData.totalWagesEarned),
               monthAdvancesText: formatINR(employeeCardData.monthAdvancesTotal),
+              hideSalaryRates: hideSalary,
               days: employeeCardData.days.map((d) => ({
                 day: d.day,
                 date: d.date,
@@ -3860,11 +4626,17 @@ export function AttendancePayrollView({
                 company={companyProfile}
                 card={employeeCardData}
                 siteLabel={siteStr}
+                hideSalaryRates={hideSalary}
               />
             );
           }}
         />
       )}
+
+      <WeeklyFoodApprovalWhatsappModal
+        payload={weeklyFoodWaModal}
+        onClose={() => setWeeklyFoodWaModal(null)}
+      />
     </div>
   );
 }

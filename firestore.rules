@@ -51,7 +51,7 @@ service cloud.firestore {
 
     function isValidCompanyProfile(data) {
       return data.keys().hasAll(['ownerId', 'companyName', 'tileZoneCatalog', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'tileZoneCatalog', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'quotationLetterheadBgDataUrl', 'quotationLetterheadOpacity', 'tileZoneCatalog', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidString(data.companyName, 1, 120)
@@ -79,6 +79,8 @@ service cloud.firestore {
         && (!('idCardAccentColor' in data) || isValidString(data.idCardAccentColor, 0, 24))
         && (!('idCardTextColor' in data) || isValidString(data.idCardTextColor, 0, 24))
         && (!('idCardBgOpacity' in data) || ((data.idCardBgOpacity is int || data.idCardBgOpacity is float) && data.idCardBgOpacity >= 0 && data.idCardBgOpacity <= 1))
+        && (!('quotationLetterheadBgDataUrl' in data) || isValidString(data.quotationLetterheadBgDataUrl, 0, 240000))
+        && (!('quotationLetterheadOpacity' in data) || ((data.quotationLetterheadOpacity is int || data.quotationLetterheadOpacity is float) && data.quotationLetterheadOpacity >= 0 && data.quotationLetterheadOpacity <= 1))
         && data.tileZoneCatalog is list
         && data.tileZoneCatalog.size() >= 1
         && data.tileZoneCatalog.size() <= 40
@@ -89,11 +91,12 @@ service cloud.firestore {
 
     function isValidProject(data) {
       return data.keys().hasAll(['ownerId', 'name', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'name', 'location', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'location', 'placeId', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidString(data.name, 1, 120)
         && (!('location' in data) || isValidString(data.location, 0, 160))
+        && (!('placeId' in data) || isValidString(data.placeId, 0, 160))
         && (!('clientName' in data) || isValidString(data.clientName, 0, 120))
         && data.status in ['active', 'completed', 'on_hold']
         && (!('startDate' in data) || isValidString(data.startDate, 0, 24))
@@ -148,7 +151,7 @@ service cloud.firestore {
 
     function isValidEmployee(data) {
       return data.keys().hasAll(['ownerId', 'empCode', 'fullName', 'role', 'phone', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'status', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'empCode', 'fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'loginPin', 'qrToken', 'status', 'notes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'empCode', 'fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'skillTags', 'loginPin', 'qrToken', 'status', 'notes', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidString(data.empCode, 3, 32)
@@ -173,6 +176,7 @@ service cloud.firestore {
         && (!('currentTowerId' in data) || isValidString(data.currentTowerId, 0, 128))
         && (!('currentTowerName' in data) || isValidString(data.currentTowerName, 0, 80))
         && (!('assignedTowerIds' in data) || (data.assignedTowerIds is list && data.assignedTowerIds.size() <= 30))
+        && (!('skillTags' in data) || (data.skillTags is list && data.skillTags.size() <= 20 && (data.skillTags.size() == 0 || data.skillTags[0] is string)))
         && (!('loginPin' in data) || isValidString(data.loginPin, 0, 24))
         && (!('qrToken' in data) || isValidString(data.qrToken, 0, 48))
         && data.status in ['active', 'inactive']
@@ -193,6 +197,32 @@ service cloud.firestore {
         && isValidString(data.mimeType, 1, 80)
         && data.sizeBytes is number && data.sizeBytes >= 1 && data.sizeBytes <= 600000
         && isValidString(data.dataUrl, 1, 850000)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEmployeeBackup(data) {
+      return data.keys().hasAll(['ownerId', 'employeeId', 'empCode', 'fullName', 'role', 'phone', 'joiningDate', 'removedAt', 'removedByName', 'employeeSnapshot', 'documents', 'summary', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'employeeId', 'empCode', 'fullName', 'role', 'phone', 'joiningDate', 'removedAt', 'removedByName', 'removalReason', 'employeeSnapshot', 'documents', 'summary', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidId(data.employeeId)
+        && isValidString(data.empCode, 1, 32)
+        && isValidString(data.fullName, 1, 100)
+        && data.role in ['Mason', 'Helper', 'Material Shifting', 'Supervisor', 'Engineer']
+        && isValidString(data.phone, 1, 24)
+        && isValidDateStr(data.joiningDate)
+        && isValidString(data.removedAt, 8, 40)
+        && isValidString(data.removedByName, 1, 100)
+        && (!('removalReason' in data) || isValidString(data.removalReason, 0, 300))
+        && data.employeeSnapshot is map
+        && data.employeeSnapshot.keys().size() >= 5
+        && data.employeeSnapshot.keys().size() <= 40
+        && data.documents is list
+        && data.documents.size() <= 5
+        && (data.documents.size() == 0 || data.documents[0] is map)
+        && data.summary is map
+        && data.summary.keys().size() <= 20
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -246,7 +276,7 @@ service cloud.firestore {
 
     function isValidAttendance(data) {
       return data.keys().hasAll(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'projectId', 'projectName', 'towerId', 'towerName', 'status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeeRole', 'projectId', 'projectName', 'towerId', 'towerName', 'status', 'inTime', 'outTime', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidDateStr(data.date)
@@ -259,6 +289,8 @@ service cloud.firestore {
         && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
         && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
         && data.status in ['present', 'half_day', 'absent']
+        && (!('inTime' in data) || isValidString(data.inTime, 0, 12))
+        && (!('outTime' in data) || isValidString(data.outTime, 0, 12))
         && data.overtimeHours is number && data.overtimeHours >= 0 && data.overtimeHours <= 24
         && data.dailyWageEarned is number && data.dailyWageEarned >= 0 && data.dailyWageEarned <= 100000
         && data.overtimePayEarned is number && data.overtimePayEarned >= 0 && data.overtimePayEarned <= 100000
@@ -274,7 +306,7 @@ service cloud.firestore {
 
     function isValidAdvance(data) {
       return data.keys().hasAll(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'advanceType', 'amount', 'paymentMode', 'whatsappShared', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeePhone', 'projectId', 'projectName', 'towerId', 'towerName', 'isSundayRun', 'advanceType', 'customCategory', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'employeeId', 'empCode', 'employeeName', 'employeePhone', 'projectId', 'projectName', 'towerId', 'towerName', 'isSundayRun', 'advanceType', 'customCategory', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'approvalStatus', 'approvalBatchId', 'submittedByName', 'submittedByRole', 'approvedByName', 'approvedAt', 'approvalNote', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidDateStr(data.date)
@@ -302,13 +334,20 @@ service cloud.firestore {
         && (!('acknowledgedBy' in data) || isValidString(data.acknowledgedBy, 0, 100))
         && (!('followUpSentAt' in data) || isValidString(data.followUpSentAt, 0, 40))
         && (!('followUpCount' in data) || (data.followUpCount is number && data.followUpCount >= 0 && data.followUpCount <= 1000))
+        && (!('approvalStatus' in data) || data.approvalStatus in ['pending_admin', 'approved', 'rejected'])
+        && (!('approvalBatchId' in data) || isValidString(data.approvalBatchId, 0, 80))
+        && (!('submittedByName' in data) || isValidString(data.submittedByName, 0, 100))
+        && (!('submittedByRole' in data) || data.submittedByRole in ['admin', 'supervisor'])
+        && (!('approvedByName' in data) || isValidString(data.approvedByName, 0, 100))
+        && (!('approvedAt' in data) || isValidString(data.approvedAt, 0, 40))
+        && (!('approvalNote' in data) || isValidString(data.approvalNote, 0, 300))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidSiteExpense(data) {
       return data.keys().hasAll(['ownerId', 'date', 'projectId', 'projectName', 'category', 'description', 'amount', 'paymentMode', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'recordedByRole', 'recordedByName', 'recordedByEmployeeId', 'toolItemsSummary', 'billReceiptNumber', 'reimbursementStatus', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && isValidDateStr(data.date)
@@ -327,6 +366,12 @@ service cloud.firestore {
         && (!('upiId' in data) || isValidString(data.upiId, 0, 120))
         && (!('proofImageDataUrl' in data) || isValidString(data.proofImageDataUrl, 0, 240000))
         && (!('notes' in data) || isValidString(data.notes, 0, 300))
+        && (!('recordedByRole' in data) || data.recordedByRole in ['admin', 'supervisor'])
+        && (!('recordedByName' in data) || isValidString(data.recordedByName, 0, 100))
+        && (!('recordedByEmployeeId' in data) || isValidString(data.recordedByEmployeeId, 0, 128))
+        && (!('toolItemsSummary' in data) || isValidString(data.toolItemsSummary, 0, 200))
+        && (!('billReceiptNumber' in data) || isValidString(data.billReceiptNumber, 0, 80))
+        && (!('reimbursementStatus' in data) || data.reimbursementStatus in ['pending_admin', 'approved', 'reimbursed'])
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -402,7 +447,7 @@ service cloud.firestore {
 
     function isValidBillingDocument(data) {
       return data.keys().hasAll(['ownerId', 'docType', 'docNumber', 'issueDate', 'clientName', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'whatsappShared', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'useCustomLetterhead', 'hideDefaultHeader', 'letterheadBgDataUrl', 'letterheadBgOpacity', 'createdAt', 'updatedAt'])
         && data.ownerId == request.auth.uid
         && isValidId(data.ownerId)
         && data.docType in ['quotation', 'invoice', 'tax_invoice']
@@ -435,6 +480,10 @@ service cloud.firestore {
         && (!('notes' in data) || isValidString(data.notes, 0, 500))
         && (!('terms' in data) || isValidString(data.terms, 0, 800))
         && data.whatsappShared is bool
+        && (!('useCustomLetterhead' in data) || data.useCustomLetterhead is bool)
+        && (!('hideDefaultHeader' in data) || data.hideDefaultHeader is bool)
+        && (!('letterheadBgDataUrl' in data) || isValidString(data.letterheadBgDataUrl, 0, 240000))
+        && (!('letterheadBgOpacity' in data) || ((data.letterheadBgOpacity is int || data.letterheadBgOpacity is float) && data.letterheadBgOpacity >= 0 && data.letterheadBgOpacity <= 1))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -469,6 +518,31 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidTeamMessage(data) {
+      return data.keys().hasAll(['ownerId', 'threadId', 'channelType', 'senderId', 'senderName', 'senderRole', 'body', 'readByIds', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'threadId', 'channelType', 'projectId', 'towerId', 'towerName', 'senderId', 'senderName', 'senderRole', 'recipientId', 'recipientName', 'recipientRole', 'body', 'attachmentName', 'attachmentMimeType', 'attachmentDataUrl', 'readByIds', 'createdAt', 'updatedAt'])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isValidString(data.threadId, 1, 160)
+        && data.channelType in ['broadcast', 'tower', 'direct']
+        && (!('projectId' in data) || isValidString(data.projectId, 0, 128))
+        && (!('towerId' in data) || isValidString(data.towerId, 0, 128))
+        && (!('towerName' in data) || isValidString(data.towerName, 0, 80))
+        && isValidString(data.senderId, 1, 128)
+        && isValidString(data.senderName, 1, 100)
+        && data.senderRole in ['admin', 'supervisor', 'employee']
+        && (!('recipientId' in data) || isValidString(data.recipientId, 0, 128))
+        && (!('recipientName' in data) || isValidString(data.recipientName, 0, 100))
+        && (!('recipientRole' in data) || data.recipientRole in ['admin', 'supervisor', 'employee'])
+        && isValidString(data.body, 1, 1200)
+        && (!('attachmentName' in data) || isValidString(data.attachmentName, 0, 180))
+        && (!('attachmentMimeType' in data) || isValidString(data.attachmentMimeType, 0, 120))
+        && (!('attachmentDataUrl' in data) || isValidString(data.attachmentDataUrl, 0, 340000))
+        && data.readByIds is list && data.readByIds.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // --- Collection Rules ---
 
     match /company_profiles/{profileId} {
@@ -482,7 +556,7 @@ service cloud.firestore {
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'tileZoneCatalog', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['companyName', 'tagline', 'address', 'hrContact', 'hrEmail', 'gstNumber', 'pfEstCode', 'esiCode', 'signatoryName', 'logoDataUrl', 'requireFinishBeforeNewWork', 'adminUsername', 'adminPassword', 'adminEditPin', 'supervisorCanEditAttendance', 'customAdvanceCategories', 'customExpenseCategories', 'weeklyExpenseBudget', 'idCardFrontBgDataUrl', 'idCardBackBgDataUrl', 'idCardBgColor', 'idCardHeaderColor', 'idCardAccentColor', 'idCardTextColor', 'idCardBgOpacity', 'quotationLetterheadBgDataUrl', 'quotationLetterheadOpacity', 'tileZoneCatalog', 'updatedAt']);
       allow delete: if isValidId(profileId) && isOwnerResource();
     }
 
@@ -497,7 +571,7 @@ service cloud.firestore {
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'placeId', 'clientName', 'status', 'startDate', 'finishDate', 'managerName', 'managerPhone', 'engineerName', 'engineerPhone', 'updatedAt']);
       allow delete: if isValidId(projectId) && isOwnerResource();
     }
 
@@ -557,7 +631,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['qrToken', 'updatedAt']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['assignedTowerIds', 'loginPin', 'updatedAt']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'loginPin', 'qrToken', 'status', 'notes', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'role', 'phone', 'alternatePhone', 'email', 'joiningDate', 'dailyRate', 'overtimeRate', 'foodAllowanceDaily', 'aadharRef', 'pfNumber', 'esiNumber', 'bloodGroup', 'emergencyContact', 'photoDataUrl', 'currentProjectId', 'currentProjectName', 'currentTowerId', 'currentTowerName', 'assignedTowerIds', 'skillTags', 'loginPin', 'qrToken', 'status', 'notes', 'updatedAt'])
         );
       allow delete: if isValidId(employeeId) && isOwnerResource();
     }
@@ -571,6 +645,16 @@ service cloud.firestore {
         && ownsDoc('employees', incoming().employeeId);
       allow update: if false;
       allow delete: if isValidId(docId) && isOwnerResource();
+    }
+
+    match /employee_backups/{backupId} {
+      allow get: if isValidId(backupId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(backupId) && isValidEmployeeBackup(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(backupId) && isOwnerResource();
     }
 
     match /deployments/{deploymentId} {
@@ -622,7 +706,7 @@ service cloud.firestore {
         && incoming().date == existing().date
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'projectId', 'projectName', 'towerId', 'towerName', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'inTime', 'outTime', 'overtimeHours', 'dailyWageEarned', 'overtimePayEarned', 'projectId', 'projectName', 'towerId', 'towerName', 'notes', 'markedByRole', 'markedByName', 'editedByName', 'editedAt', 'editReason', 'updatedAt']);
       allow delete: if isValidId(attendanceId) && isOwnerResource();
     }
 
@@ -639,7 +723,7 @@ service cloud.firestore {
         && incoming().employeeId == existing().employeeId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'notes', 'customCategory', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'advanceType', 'amount', 'paymentMode', 'projectId', 'projectName', 'towerId', 'towerName', 'isSundayRun', 'whatsappShared', 'acknowledged', 'acknowledgedAt', 'acknowledgedBy', 'followUpSentAt', 'followUpCount', 'approvalStatus', 'approvalBatchId', 'submittedByName', 'submittedByRole', 'approvedByName', 'approvedAt', 'approvalNote', 'notes', 'customCategory', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'updatedAt']);
       allow delete: if isValidId(advanceId) && isOwnerResource();
     }
 
@@ -655,7 +739,7 @@ service cloud.firestore {
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['date', 'projectId', 'projectName', 'towerId', 'towerName', 'category', 'customCategory', 'description', 'vendorName', 'amount', 'paymentMode', 'paymentApp', 'transactionId', 'upiId', 'proofImageDataUrl', 'notes', 'recordedByRole', 'recordedByName', 'recordedByEmployeeId', 'toolItemsSummary', 'billReceiptNumber', 'reimbursementStatus', 'updatedAt']);
       allow delete: if isValidId(expenseId) && isOwnerResource();
     }
 
@@ -718,7 +802,7 @@ service cloud.firestore {
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['docType', 'docNumber', 'issueDate', 'dueDate', 'projectId', 'projectName', 'towerId', 'towerName', 'clientName', 'clientPhone', 'clientEmail', 'clientAddress', 'clientGstin', 'placeOfSupply', 'taxMode', 'items', 'subtotal', 'cgstTotal', 'sgstTotal', 'igstTotal', 'roundOff', 'grandTotal', 'amountPaid', 'status', 'notes', 'terms', 'whatsappShared', 'useCustomLetterhead', 'hideDefaultHeader', 'letterheadBgDataUrl', 'letterheadBgOpacity', 'updatedAt']);
       allow delete: if isValidId(docId) && isOwnerResource();
     }
 
@@ -737,6 +821,21 @@ service cloud.firestore {
         && (!('employeeId' in incoming()) || incoming().employeeId == '' || ownsDoc('employees', incoming().employeeId))
         && incoming().diff(existing()).affectedKeys().hasOnly(['source', 'docCategory', 'fileFormat', 'title', 'fileName', 'mimeType', 'sizeBytes', 'approvalStatus', 'approvedByName', 'approvedAt', 'employeeId', 'empCode', 'employeeName', 'refNumber', 'issueDate', 'recipient', 'subject', 'bodyHtml', 'plainTextSummary', 'deckJson', 'dataUrl', 'updatedAt']);
       allow delete: if isValidId(docId) && isOwnerResource();
+    }
+
+    match /team_messages/{messageId} {
+      allow get: if isValidId(messageId) && isOwnerResource();
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(messageId) && isValidTeamMessage(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(messageId) && isValidTeamMessage(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['readByIds', 'updatedAt']);
+      allow delete: if isValidId(messageId) && isOwnerResource();
     }
   }
 }

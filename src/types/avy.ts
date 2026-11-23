@@ -51,6 +51,12 @@ export interface TileZoneState {
   assignedEmployeeName?: string;
   updatedDate?: string;
   notes?: string;
+  voiceNoteDataUrl?: string;
+  voiceNoteTranscript?: string;
+  issueStatus?: 'open' | 'rectified';
+  issueReportedBy?: string;
+  issueReportedAt?: string;
+  rectifiedAt?: string;
 }
 
 export interface CompanyProfile {
@@ -81,6 +87,8 @@ export interface CompanyProfile {
   idCardAccentColor?: string;
   idCardTextColor?: string;
   idCardBgOpacity?: number;
+  quotationLetterheadBgDataUrl?: string;
+  quotationLetterheadOpacity?: number;
   tileZoneCatalog: TileZoneDefinition[];
   createdAt: string;
   updatedAt: string;
@@ -91,6 +99,7 @@ export interface Project {
   ownerId: string;
   name: string;
   location: string;
+  placeId?: string;
   clientName: string;
   status: 'active' | 'completed' | 'on_hold';
   startDate?: string;
@@ -164,12 +173,54 @@ export interface Employee {
   currentTowerId?: string;
   currentTowerName?: string;
   assignedTowerIds?: string[];
+  skillTags?: string[];
   loginPin?: string;
   qrToken?: string;
   status: 'active' | 'inactive';
   notes: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface EmployeeBackupSummary {
+  attendanceCount: number;
+  presentDays: number;
+  halfDays: number;
+  absentDays: number;
+  totalWagesEarned: number;
+  totalAdvances: number;
+  totalSettled: number;
+  netPayable: number;
+  deploymentsCount: number;
+  assignmentsCount: number;
+  documentsCount: number;
+}
+
+export interface RemovedEmployeeBackup {
+  id: string;
+  ownerId: string;
+  employeeId: string;
+  empCode: string;
+  fullName: string;
+  role: EmployeeRole;
+  phone: string;
+  joiningDate: string;
+  removedAt: string;
+  removedByName: string;
+  removalReason: string;
+  employeeSnapshot: Employee;
+  documents: EmployeeDocument[];
+  summary: EmployeeBackupSummary;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmployeeBackupExportBundle {
+  format: 'avy_infra_worker_backup_v1';
+  exportedAt: string;
+  companyName: string;
+  count: number;
+  backups: RemovedEmployeeBackup[];
 }
 
 export interface QrActiveAssignmentSummary {
@@ -228,6 +279,43 @@ export interface QrScannedProfile {
   completedZonesCount: number;
   activeAssignments: QrActiveAssignmentSummary[];
   recentDeployments: QrDeploymentSummary[];
+  updatedAt: string;
+}
+
+export type CustomQrTargetKind = 'employees' | 'sites';
+export type CustomQrLayout = 'badges' | 'stickers' | 'posters';
+export type CustomQrAccentTheme =
+  | 'navy_orange'
+  | 'emerald_slate'
+  | 'indigo_sky'
+  | 'charcoal_amber';
+export type CustomQrErrorLevel = 'M' | 'H';
+
+export interface SiteQrScannedProfile {
+  projectId: string;
+  projectName: string;
+  location: string;
+  placeId?: string;
+  status: Project['status'];
+  clientName: string;
+  companyName: string;
+  towerId?: string;
+  towerName?: string;
+  checkpointLabel: string;
+  customTitle?: string;
+  customSubtitle?: string;
+  managerName?: string;
+  managerPhone?: string;
+  engineerName?: string;
+  engineerPhone?: string;
+  supervisorName?: string;
+  supervisorPhone?: string;
+  inchargeName?: string;
+  inchargePhone?: string;
+  activeCrewCount: number;
+  todayPresentCount: number;
+  totalFlats: number;
+  completionPct: number;
   updatedAt: string;
 }
 
@@ -312,6 +400,8 @@ export interface AttendanceRecord {
   towerId?: string;
   towerName?: string;
   status: AttendanceStatus;
+  inTime?: string;
+  outTime?: string;
   overtimeHours: number;
   dailyWageEarned: number;
   overtimePayEarned: number;
@@ -327,6 +417,7 @@ export interface AttendanceRecord {
 
 export type AdvanceType = 'daily_food' | 'weekly_food' | 'cash_advance' | 'custom';
 export type PaymentMode = 'cash' | 'upi' | 'bank_transfer';
+export type AdvanceApprovalStatus = 'pending_admin' | 'approved' | 'rejected';
 
 export interface PaymentProofFields {
   paymentApp?: string;
@@ -359,6 +450,13 @@ export interface AdvanceEntry extends PaymentProofFields {
   acknowledgedBy?: string;
   followUpSentAt?: string;
   followUpCount?: number;
+  approvalStatus?: AdvanceApprovalStatus;
+  approvalBatchId?: string;
+  submittedByName?: string;
+  submittedByRole?: 'admin' | 'supervisor';
+  approvedByName?: string;
+  approvedAt?: string;
+  approvalNote?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -392,6 +490,12 @@ export interface SiteExpense extends PaymentProofFields {
   amount: number;
   paymentMode: PaymentMode;
   notes: string;
+  recordedByRole?: 'admin' | 'supervisor';
+  recordedByName?: string;
+  recordedByEmployeeId?: string;
+  toolItemsSummary?: string;
+  billReceiptNumber?: string;
+  reimbursementStatus?: 'pending_admin' | 'approved' | 'reimbursed';
   createdAt: string;
   updatedAt: string;
 }
@@ -510,6 +614,10 @@ export interface BillingDocument {
   notes?: string;
   terms?: string;
   whatsappShared: boolean;
+  useCustomLetterhead?: boolean;
+  hideDefaultHeader?: boolean;
+  letterheadBgDataUrl?: string;
+  letterheadBgOpacity?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -577,4 +685,30 @@ export interface WhatsappMessagePayload {
   message: string;
   advanceId?: string;
   followUpAdvanceId?: string;
+}
+
+export type TeamMessageChannelType = 'broadcast' | 'tower' | 'direct';
+export type TeamMessageActorRole = 'admin' | 'supervisor' | 'employee';
+
+export interface TeamMessage {
+  id: string;
+  ownerId: string;
+  threadId: string;
+  channelType: TeamMessageChannelType;
+  projectId?: string;
+  towerId?: string;
+  towerName?: string;
+  senderId: string;
+  senderName: string;
+  senderRole: TeamMessageActorRole;
+  recipientId?: string;
+  recipientName?: string;
+  recipientRole?: TeamMessageActorRole;
+  body: string;
+  attachmentName?: string;
+  attachmentMimeType?: string;
+  attachmentDataUrl?: string;
+  readByIds: string[];
+  createdAt: string;
+  updatedAt: string;
 }

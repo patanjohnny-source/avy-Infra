@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { useTheme } from '../context/ThemeContext';
-import { compressImageToDataUrl } from '../utils/idCardPdf';
+import { compressBoundedScreenshotDataUrl, compressImageToDataUrl } from '../utils/idCardPdf';
 import { DEFAULT_WEEKLY_EXPENSE_BUDGET } from '../utils/operations';
 import { formatINR } from '../utils/payroll';
 
@@ -20,6 +20,21 @@ interface CompanySettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   canEditCompany?: boolean;
+}
+
+function getLetterheadPreviewOpacityClass(opacity: number): string {
+  if (opacity <= 0.08) return 'opacity-5';
+  if (opacity <= 0.13) return 'opacity-10';
+  if (opacity <= 0.18) return 'opacity-15';
+  if (opacity <= 0.24) return 'opacity-20';
+  if (opacity <= 0.29) return 'opacity-25';
+  if (opacity <= 0.35) return 'opacity-30';
+  if (opacity <= 0.45) return 'opacity-40';
+  if (opacity <= 0.55) return 'opacity-50';
+  if (opacity <= 0.65) return 'opacity-60';
+  if (opacity <= 0.75) return 'opacity-75';
+  if (opacity <= 0.88) return 'opacity-85';
+  return 'opacity-100';
 }
 
 export function CompanySettingsModal({
@@ -40,6 +55,8 @@ export function CompanySettingsModal({
   const [esiCode, setEsiCode] = useState('');
   const [signatoryName, setSignatoryName] = useState('');
   const [logoDataUrl, setLogoDataUrl] = useState('');
+  const [quotationLetterheadBgDataUrl, setQuotationLetterheadBgDataUrl] = useState('');
+  const [quotationLetterheadOpacity, setQuotationLetterheadOpacity] = useState(0.14);
   const [requireFinishBeforeNewWork, setRequireFinishBeforeNewWork] = useState(true);
   const [customExpenseCategories, setCustomExpenseCategories] = useState<string[]>([]);
   const [newExpenseCategory, setNewExpenseCategory] = useState('');
@@ -60,6 +77,13 @@ export function CompanySettingsModal({
     setEsiCode(companyProfile.esiCode || '');
     setSignatoryName(companyProfile.signatoryName || '');
     setLogoDataUrl(companyProfile.logoDataUrl || '');
+    setQuotationLetterheadBgDataUrl(companyProfile.quotationLetterheadBgDataUrl || '');
+    setQuotationLetterheadOpacity(
+      typeof companyProfile.quotationLetterheadOpacity === 'number' &&
+        Number.isFinite(companyProfile.quotationLetterheadOpacity)
+        ? Math.max(0.05, Math.min(1, companyProfile.quotationLetterheadOpacity))
+        : 0.14
+    );
     setRequireFinishBeforeNewWork(companyProfile.requireFinishBeforeNewWork !== false);
     setCustomExpenseCategories(companyProfile.customExpenseCategories || []);
     setNewExpenseCategory('');
@@ -86,6 +110,23 @@ export function CompanySettingsModal({
       setLogoDataUrl(compressed);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to process company logo image.');
+    }
+  };
+
+  const handleQuotationLetterheadUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError('');
+    try {
+      const compressed = await compressBoundedScreenshotDataUrl(file, {
+        maxWidth: 1000,
+        maxHeight: 1400,
+        quality: 0.78,
+        maxChars: 220000,
+      });
+      setQuotationLetterheadBgDataUrl(compressed);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to process letterhead background image.');
     }
   };
 
@@ -121,6 +162,8 @@ export function CompanySettingsModal({
         esiCode: esiCode.trim(),
         signatoryName: signatoryName.trim() || 'Authorized Signatory — HR',
         logoDataUrl,
+        quotationLetterheadBgDataUrl,
+        quotationLetterheadOpacity,
         requireFinishBeforeNewWork,
         customExpenseCategories,
         weeklyExpenseBudget: cleanBudget,
@@ -634,6 +677,90 @@ export function CompanySettingsModal({
                   );
                 }
               )}
+            </div>
+          </div>
+
+          {/* Company Default Quotation & Invoice Custom Background Letterhead */}
+          <div
+            data-testid="company-quotation-letterhead-section"
+            className="p-3.5 bg-slate-50 border border-slate-200 rounded-md space-y-3"
+          >
+            <div>
+              <div className="text-xs font-semibold text-slate-900">
+                Quotation &amp; Invoice Custom Background Letterhead
+              </div>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Upload your full-page A4 letterhead or watermark image. Can be applied as default for new Quotations and customized per document.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+              <div className="w-20 h-28 rounded border border-slate-300 bg-white flex items-center justify-center overflow-hidden relative shrink-0">
+                {quotationLetterheadBgDataUrl ? (
+                  <img
+                    src={quotationLetterheadBgDataUrl}
+                    alt="Quotation Letterhead Background Preview"
+                    className={`w-full h-full object-cover ${getLetterheadPreviewOpacityClass(
+                      quotationLetterheadOpacity
+                    )}`}
+                  />
+                ) : (
+                  <span className="text-[10px] text-slate-400 text-center px-1">
+                    No A4 BG
+                  </span>
+                )}
+              </div>
+
+              <div className="flex-1 space-y-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 cursor-pointer">
+                    <ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>
+                      {quotationLetterheadBgDataUrl
+                        ? 'Change Letterhead BG'
+                        : 'Upload Letterhead BG'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      data-testid="comp-letterhead-upload"
+                      onChange={handleQuotationLetterheadUpload}
+                      className="sr-only"
+                    />
+                  </label>
+                  {quotationLetterheadBgDataUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setQuotationLetterheadBgDataUrl('')}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-red-700 bg-white border border-red-200 rounded-md hover:bg-red-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Clear</span>
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-700 mb-1">
+                    <label htmlFor="comp-letterhead-opacity" className="font-medium">
+                      Background Opacity
+                    </label>
+                    <span className="font-mono font-semibold text-slate-900">
+                      {Math.round(quotationLetterheadOpacity * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    id="comp-letterhead-opacity"
+                    type="range"
+                    min="0.05"
+                    max="1"
+                    step="0.05"
+                    value={quotationLetterheadOpacity}
+                    onChange={(e) => setQuotationLetterheadOpacity(Number(e.target.value) || 0.14)}
+                    className="w-full accent-orange-700"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 

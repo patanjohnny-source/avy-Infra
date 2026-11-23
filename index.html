@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AVY INFRA" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <title>AVY INFRA — Tile Laying & Workforce Operations</title>
     <meta name="description" content="Tile laying project tracker, flat and room work matrix, workforce IDs, daily and weekly food advances, attendance register, payment ledger, and WhatsApp reporting for AVY INFRA." />
     <meta property="og:title" content="AVY INFRA — Tile Laying & Workforce Operations" />
@@ -15,6 +22,20 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <script>
+      (function () {
+        window.__avyDeferredInstallPrompt = null;
+        window.addEventListener('beforeinstallprompt', function (e) {
+          e.preventDefault();
+          window.__avyDeferredInstallPrompt = e;
+          window.dispatchEvent(new CustomEvent('avy-pwa-prompt-ready'));
+        });
+        window.addEventListener('appinstalled', function () {
+          window.__avyDeferredInstallPrompt = null;
+          window.dispatchEvent(new CustomEvent('avy-pwa-installed'));
+        });
+      })();
+    </script>
     <script>
       (function () {
         try {

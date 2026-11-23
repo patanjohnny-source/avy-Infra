@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import type { CustomQrErrorLevel } from '../types/avy';
 import { generateQrSvgString } from '../utils/qrProfile';
 
 interface QrCodeSvgProps {
@@ -7,6 +8,8 @@ interface QrCodeSvgProps {
   label?: string;
   ariaLabel?: string;
   className?: string;
+  errorCorrectionLevel?: CustomQrErrorLevel;
+  darkColor?: string;
 }
 
 export function QrCodeSvg({
@@ -15,13 +18,15 @@ export function QrCodeSvg({
   label = 'Employee verification QR code',
   ariaLabel,
   className = '',
+  errorCorrectionLevel = 'M',
+  darkColor = '#0f172a',
 }: QrCodeSvgProps) {
   const effectiveLabel = ariaLabel || label;
   const [svgMarkup, setSvgMarkup] = useState<string>('');
 
   useEffect(() => {
     let active = true;
-    generateQrSvgString(value)
+    generateQrSvgString(value, { errorCorrectionLevel, darkColor })
       .then((svg) => {
         if (active) setSvgMarkup(svg);
       })
@@ -31,7 +36,7 @@ export function QrCodeSvg({
     return () => {
       active = false;
     };
-  }, [value]);
+  }, [value, errorCorrectionLevel, darkColor]);
 
   if (!svgMarkup) {
     return (

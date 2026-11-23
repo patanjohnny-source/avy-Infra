@@ -7,6 +7,7 @@ interface PrintableAttendanceCardSheetProps {
   company: CompanyProfile;
   card: SingleEmployeeAttendanceCard;
   siteLabel: string;
+  hideSalaryRates?: boolean;
 }
 
 const WEEKDAY_HEADERS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
@@ -15,6 +16,7 @@ export function PrintableAttendanceCardSheet({
   company,
   card,
   siteLabel,
+  hideSalaryRates = false,
 }: PrintableAttendanceCardSheetProps) {
   const { employee } = card;
   const estNet = Math.max(0, card.totalWagesEarned - card.monthAdvancesTotal);
@@ -86,7 +88,11 @@ export function PrintableAttendanceCardSheet({
           )}
         </div>
 
-        <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        <div
+          className={`flex-1 grid grid-cols-2 ${
+            hideSalaryRates ? 'sm:grid-cols-3' : 'sm:grid-cols-4'
+          } gap-2.5`}
+        >
           <div>
             <div className="text-[10px] uppercase text-slate-500 font-semibold">Worker Name</div>
             <div className="text-sm font-bold text-slate-900">{employee.fullName}</div>
@@ -103,20 +109,26 @@ export function PrintableAttendanceCardSheet({
             <div className="text-[10px] uppercase text-slate-500 font-semibold">Site / Tower</div>
             <div className="font-semibold text-slate-900">{siteLabel}</div>
           </div>
-          <div>
-            <div className="text-[10px] uppercase text-slate-500 font-semibold">Wage Rates</div>
-            <div className="font-mono font-semibold text-slate-900">
-              {formatINR(employee.dailyRate)} / day
+          {!hideSalaryRates && (
+            <div>
+              <div className="text-[10px] uppercase text-slate-500 font-semibold">Wage Rates</div>
+              <div className="font-mono font-semibold text-slate-900">
+                {formatINR(employee.dailyRate)} / day
+              </div>
+              <div className="text-[11px] font-mono text-slate-600">
+                OT: {formatINR(employee.overtimeRate || Math.round(employee.dailyRate / 8))}/hr
+              </div>
             </div>
-            <div className="text-[11px] font-mono text-slate-600">
-              OT: {formatINR(employee.overtimeRate || Math.round(employee.dailyRate / 8))}/hr
-            </div>
-          </div>
+          )}
         </div>
       </section>
 
-      {/* Clear 6-Box Summary Strip */}
-      <section className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center">
+      {/* Clear Summary Strip */}
+      <section
+        className={`grid grid-cols-3 ${
+          hideSalaryRates ? 'sm:grid-cols-5' : 'sm:grid-cols-6'
+        } gap-2 text-center`}
+      >
         <div className="p-2 rounded border border-emerald-200 bg-emerald-50">
           <div className="text-[10px] font-semibold text-emerald-800">Present (P)</div>
           <div className="text-base font-mono font-bold text-emerald-900">{card.presentDays}</div>
@@ -135,16 +147,22 @@ export function PrintableAttendanceCardSheet({
             {card.effectiveDays}d · {card.overtimeHours}h
           </div>
         </div>
-        <div className="p-2 rounded border border-slate-200 bg-white">
-          <div className="text-[10px] font-semibold text-slate-600">Month Wages</div>
-          <div className="text-sm font-mono font-bold text-slate-900 mt-0.5">
-            {formatINR(card.totalWagesEarned)}
+        {!hideSalaryRates && (
+          <div className="p-2 rounded border border-slate-200 bg-white">
+            <div className="text-[10px] font-semibold text-slate-600">Month Wages</div>
+            <div className="text-sm font-mono font-bold text-slate-900 mt-0.5">
+              {formatINR(card.totalWagesEarned)}
+            </div>
           </div>
-        </div>
+        )}
         <div className="p-2 rounded border border-slate-800 bg-slate-900 text-white">
-          <div className="text-[10px] text-slate-300">Adv / Net Est.</div>
+          <div className="text-[10px] text-slate-300">
+            {hideSalaryRates ? 'Month Advances' : 'Adv / Net Est.'}
+          </div>
           <div className="text-xs font-mono font-bold text-emerald-300 mt-0.5">
-            -{formatINR(card.monthAdvancesTotal)} | {formatINR(estNet)}
+            {hideSalaryRates
+              ? formatINR(card.monthAdvancesTotal)
+              : `-${formatINR(card.monthAdvancesTotal)} | ${formatINR(estNet)}`}
           </div>
         </div>
       </section>
@@ -217,8 +235,9 @@ export function PrintableAttendanceCardSheet({
                 <tr className="bg-slate-100 border-b border-slate-200 text-slate-600">
                   <th className="py-1 px-1.5">Date</th>
                   <th className="py-1 px-1.5">Status</th>
+                  <th className="py-1 px-1.5">In/Out</th>
                   <th className="py-1 px-1.5 text-right">OT</th>
-                  <th className="py-1 px-1.5 text-right">Wage</th>
+                  {!hideSalaryRates && <th className="py-1 px-1.5 text-right">Wage</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -240,12 +259,19 @@ export function PrintableAttendanceCardSheet({
                     >
                       {d.status ? ATTENDANCE_STATUS_LABELS[d.status] : '—'}
                     </td>
+                    <td className="py-0.5 px-1.5 font-mono text-slate-600 whitespace-nowrap">
+                      {d.record?.inTime || d.record?.outTime
+                        ? `${d.record?.inTime || '--'}–${d.record?.outTime || '--'}`
+                        : '—'}
+                    </td>
                     <td className="py-0.5 px-1.5 text-right font-mono text-slate-600">
                       {d.overtimeHours > 0 ? `${d.overtimeHours}h` : '—'}
                     </td>
-                    <td className="py-0.5 px-1.5 text-right font-mono font-semibold text-slate-900">
-                      {d.earned > 0 ? formatINR(d.earned) : '—'}
-                    </td>
+                    {!hideSalaryRates && (
+                      <td className="py-0.5 px-1.5 text-right font-mono font-semibold text-slate-900">
+                        {d.earned > 0 ? formatINR(d.earned) : '—'}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

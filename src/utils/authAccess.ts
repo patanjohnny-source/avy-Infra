@@ -207,6 +207,35 @@ export function isEmployeeSession(session: WorkspaceSession | null): boolean {
   return session?.role === 'employee';
 }
 
+export type WorkspaceSectionId =
+  | 'overview'
+  | 'projects'
+  | 'workforce'
+  | 'payroll'
+  | 'expenses'
+  | 'sitelogs'
+  | 'messenger'
+  | 'billing'
+  | 'documents';
+
+const SUPERVISOR_BLOCKED_SECTIONS = new Set<WorkspaceSectionId>(['billing', 'documents']);
+
+export function canAccessWorkspaceSection(
+  session: WorkspaceSession | null,
+  section: WorkspaceSectionId
+): boolean {
+  if (!session) return false;
+  if (session.role === 'admin') return true;
+  if (session.role === 'supervisor') {
+    return !SUPERVISOR_BLOCKED_SECTIONS.has(section);
+  }
+  return false;
+}
+
+export function canViewEmployeeFixedSalary(session: WorkspaceSession | null): boolean {
+  return session?.role === 'admin';
+}
+
 export function canAccessTower(session: WorkspaceSession | null, towerId?: string): boolean {
   if (!session) return false;
   if (session.role === 'admin') return true;

@@ -3,7 +3,12 @@ import { AlertTriangle, CheckCircle2, ClipboardCheck, Search, X } from 'lucide-r
 import { useStore } from '../context/StoreContext';
 import { getTodayIso } from '../data/seedData';
 import type { AssignmentStatus, TileZoneKey } from '../types/avy';
-import { findActiveUnfinishedAssignment } from '../utils/operations';
+import {
+  EMPLOYEE_PRESET_SKILL_TAGS,
+  filterEmployeesBySkillTags,
+  findActiveUnfinishedAssignment,
+  normalizeSkillTags,
+} from '../utils/operations';
 import {
   formatFloorLabel,
   getEffectiveZonesForFlat,
@@ -74,6 +79,7 @@ export function AssignWorkModal({
   const [flatSearch, setFlatSearch] = useState('');
   const [zoneSearch, setZoneSearch] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [skillFilter, setSkillFilter] = useState<string>('all');
   const [towerCrewOnly, setTowerCrewOnly] = useState(false);
 
   const [error, setError] = useState('');
@@ -106,6 +112,7 @@ export function AssignWorkModal({
     setFlatSearch('');
     setZoneSearch('');
     setEmployeeSearch('');
+    setSkillFilter('all');
     setTowerCrewOnly(false);
     setCompletedNotice('');
     setError('');
@@ -155,8 +162,20 @@ export function AssignWorkModal({
     );
   }, [effectiveZones, zoneSearch]);
 
+  const availableSkillTags = useMemo(
+    () =>
+      normalizeSkillTags([
+        ...EMPLOYEE_PRESET_SKILL_TAGS,
+        ...activeEmployees.flatMap((e) => e.skillTags || []),
+      ]),
+    [activeEmployees]
+  );
+
   const filteredEmployees = useMemo(() => {
-    let list = [...activeEmployees];
+    let list =
+      skillFilter !== 'all'
+        ? filterEmployeesBySkillTags(activeEmployees, [skillFilter], 'any')
+        : [...activeEmployees];
     if (towerCrewOnly && towerId) {
       const towerMatches = list.filter((emp) => emp.currentTowerId === towerId);
       if (towerMatches.length > 0) list = towerMatches;
@@ -170,7 +189,8 @@ export function AssignWorkModal({
           emp.role.toLowerCase().includes(q) ||
           emp.phone.toLowerCase().includes(q) ||
           (emp.currentProjectName || '').toLowerCase().includes(q) ||
-          (emp.currentTowerName || '').toLowerCase().includes(q)
+          (emp.currentTowerName || '').toLowerCase().includes(q) ||
+          (emp.skillTags || []).some((t) => t.toLowerCase().includes(q))
       );
     }
     // Sort selected tower crew first
@@ -179,7 +199,7 @@ export function AssignWorkModal({
       const bMatch = b.currentTowerId === towerId ? 0 : 1;
       return aMatch - bMatch || a.fullName.localeCompare(b.fullName);
     });
-  }, [activeEmployees, towerCrewOnly, towerId, employeeSearch]);
+  }, [activeEmployees, skillFilter, towerCrewOnly, towerId, employeeSearch]);
 
   const selectedEmpObj = activeEmployees.find((e) => e.id === employeeId);
 
@@ -461,13 +481,8 @@ export function AssignWorkModal({
                 <span>Tower Crew Only</span>
               </label>
             </div>
-            {selectedEmpObj?.currentProjectName && (
-              <div className="text-[11px] font-mono text-slate-600">
-                Allocated Site: {selectedEmpObj.currentProjectName}
-                {selectedEmpObj.currentTowerName ? ` · ${selectedEmpObj.currentTowerName}` : ''}
-              </div>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" aria-hidden="true" />
                 <input
@@ -478,20 +493,49 @@ export function AssignWorkModal({
                     const q = e.target.value;
                     setEmployeeSearch(q);
                     const lq = q.trim().toLowerCase();
-                    const match = activeEmployees.find(
+                    const pool =
+                      skillFilter !== 'all'
+                        ? filterEmployeesBySkillTags(activeEmployees, [skillFilter], 'any')
+                        : activeEmployees;
+                    const match = pool.find(
                       (emp) =>
                         !lq ||
                         emp.fullName.toLowerCase().includes(lq) ||
                         emp.empCode.toLowerCase().includes(lq) ||
                         emp.role.toLowerCase().includes(lq) ||
-                        (emp.currentProjectName || '').toLowerCase().includes(lq)
+                        (emp.currentProjectName || '').toLowerCase().includes(lq) ||
+                        (emp.skillTags || []).some((t) => t.toLowerCase().includes(lq))
                     );
                     if (match) setEmployeeId(match.id);
                   }}
-                  placeholder="Type name, AVY-MSN-001, Mason, Tower..."
+                  placeholder="Name, ID, trade, skill..."
                   className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:border-orange-600"
                 />
               </div>
+              <select
+                id="asgn-skill-filter"
+                aria-label="Filter employees by skill tag"
+                value={skillFilter}
+                onChange={(e) => {
+                  const nextSkill = e.target.value;
+                  setSkillFilter(nextSkill);
+                  const nextPool =
+                    nextSkill !== 'all'
+                      ? filterEmployeesBySkillTags(activeEmployees, [nextSkill], 'any')
+                      : activeEmployees;
+                  if (nextPool.length > 0 && !nextPool.some((x) => x.id === employeeId)) {
+                    setEmployeeId(nextPool[0].id);
+                  }
+                }}
+                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-md focus:outline-none focus:border-orange-600"
+              >
+                <option value="all">All Skills ({activeEmployees.length})</option>
+                {availableSkillTags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
               <select
                 id="asgn-employee"
                 aria-label="Select employee to assign"
@@ -515,6 +559,29 @@ export function AssignWorkModal({
                 )}
               </select>
             </div>
+
+            {selectedEmpObj && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                {selectedEmpObj.currentProjectName && (
+                  <div className="text-[11px] font-mono text-slate-600">
+                    Allocated Site: {selectedEmpObj.currentProjectName}
+                    {selectedEmpObj.currentTowerName ? ` · ${selectedEmpObj.currentTowerName}` : ''}
+                  </div>
+                )}
+                {selectedEmpObj.skillTags && selectedEmpObj.skillTags.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {selectedEmpObj.skillTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-900 border border-amber-200 rounded"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Unfinished Work Guard Banner */}

@@ -5,6 +5,7 @@ import type {
   ExpenseCategory,
   FlatUnit,
   Project,
+  TileZoneDefinition,
   TileZoneState,
   Tower,
   WorkAssignment,
@@ -12,7 +13,7 @@ import type {
   ZoneStatus,
 } from '../types/avy';
 import { formatINR } from './payroll';
-import { TILE_ZONES, ZONE_LABEL_MAP } from './tileZones';
+import { TILE_ZONES, ZONE_LABEL_MAP, calculateFlatProgress } from './tileZones';
 
 export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
   food_mess: 'Food & Mess Kitchen Expense',
@@ -1775,5 +1776,398 @@ export function formatBurnAlertWhatsappMessage(params: {
     `Action Required: Please review daily wages, advances & site expenses.`,
   ].join('\n');
 }
+
+export interface OverviewKpis {
+  activeProjectsCount: number;
+  totalProjectsCount: number;
+  totalWorkforceCount: number;
+  activeWorkforceCount: number;
+  todayAttendancePct: number;
+  todayAttendedCount: number;
+  todayEligibleCount: number;
+  pendingFoodAdvancesCount: number;
+  pendingFoodAdvancesAmount: number;
+  pendingApprovalFoodCount: number;
+  pendingApprovalFoodAmount: number;
+  unacknowledgedFoodCount: number;
+  unacknowledgedFoodAmount: number;
+}
+
+export function computeOverviewKpis(params: {
+  projects: Project[];
+  employees: Employee[];
+  attendance: AttendanceRecord[];
+  advances: AdvanceEntry[];
+  date: string;
+}): OverviewKpis {
+  const { projects, employees, attendance, advances, date } = params;
+  const activeProjectsCount = projects.filter((p) => p.status === 'active').length;
+  const totalProjectsCount = projects.length;
+
+  const activeEmployees = employees.filter((e) => e.status === 'active');
+  const activeWorkforceCount = activeEmployees.length;
+  const totalWorkforceCount = employees.length;
+
+  const activeEmpIds = new Set(activeEmployees.map((e) => e.id));
+  const todayRecords = attendance.filter((a) => a.date === date);
+  const attendedIds = new Set<string>();
+  for (const rec of todayRecords) {
+    if (rec.status === 'present' || rec.status === 'half_day') {
+      attendedIds.add(rec.employeeId);
+    }
+  }
+  const todayEligibleCount =
+    activeWorkforceCount > 0 ? activeWorkforceCount : todayRecords.length;
+  const todayAttendedCount =
+    activeWorkforceCount > 0
+      ? Array.from(attendedIds).filter((id) => activeEmpIds.has(id)).length
+      : attendedIds.size;
+  const todayAttendancePct =
+    todayEligibleCount > 0
+      ? Math.min(100, Math.round((todayAttendedCount / todayEligibleCount) * 100))
+      : 0;
+
+  const foodAdvances = advances.filter(
+    (adv) => adv.advanceType === 'daily_food' || adv.advanceType === 'weekly_food'
+  );
+  let pendingApprovalFoodCount = 0;
+  let pendingApprovalFoodAmount = 0;
+  let unacknowledgedFoodCount = 0;
+  let unacknowledgedFoodAmount = 0;
+  let pendingFoodAdvancesCount = 0;
+  let pendingFoodAdvancesAmount = 0;
+
+  for (const adv of foodAdvances) {
+    const amt = Number(adv.amount) || 0;
+    const isPendingAdmin = adv.approvalStatus === 'pending_admin';
+    const isRejected = adv.approvalStatus === 'rejected';
+    const isUnacked = !adv.acknowledged && !isRejected;
+
+    if (isPendingAdmin) {
+      pendingApprovalFoodCount += 1;
+      pendingApprovalFoodAmount += amt;
+    }
+    if (isUnacked) {
+      unacknowledgedFoodCount += 1;
+      unacknowledgedFoodAmount += amt;
+    }
+    if (isPendingAdmin || isUnacked) {
+      pendingFoodAdvancesCount += 1;
+      pendingFoodAdvancesAmount += amt;
+    }
+  }
+
+  return {
+    activeProjectsCount,
+    totalProjectsCount,
+    totalWorkforceCount,
+    activeWorkforceCount,
+    todayAttendancePct,
+    todayAttendedCount,
+    todayEligibleCount,
+    pendingFoodAdvancesCount,
+    pendingFoodAdvancesAmount,
+    pendingApprovalFoodCount,
+    pendingApprovalFoodAmount,
+    unacknowledgedFoodCount,
+    unacknowledgedFoodAmount,
+  };
+}
+
+export type ProjectCompletionTier = 'high' | 'medium' | 'low';
+
+export interface ProjectCompletionStyle {
+  tier: ProjectCompletionTier;
+  tierLabel: string;
+  colorHex: string;
+  borderHex: string;
+  badgeClass: string;
+}
+
+export function getProjectCompletionColor(pct: number): ProjectCompletionStyle {
+  if (pct >= 75) {
+    return {
+      tier: 'high',
+      tierLabel: 'On Track (75%+)',
+      colorHex: '#16a34a',
+      borderHex: '#15803d',
+      badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    };
+  }
+  if (pct >= 35) {
+    return {
+      tier: 'medium',
+      tierLabel: 'In Progress (35–74%)',
+      colorHex: '#d97706',
+      borderHex: '#b45309',
+      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
+    };
+  }
+  return {
+    tier: 'low',
+    tierLabel: 'Early Stage (<35%)',
+    colorHex: '#dc2626',
+    borderHex: '#991b1b',
+    badgeClass: 'bg-red-50 text-red-700 border-red-200',
+  };
+}
+
+export interface ProjectCompletionPoint {
+  projectId: string;
+  projectName: string;
+  shortName: string;
+  location: string;
+  placeId?: string;
+  status: Project['status'];
+  towersCount: number;
+  totalFlats: number;
+  completedFlats: number;
+  inProgressFlats: number;
+  totalZones: number;
+  completedZones: number;
+  completionPct: number;
+  tier: ProjectCompletionTier;
+  tierLabel: string;
+  colorHex: string;
+  borderHex: string;
+  badgeClass: string;
+}
+
+export function computeProjectCompletionSeries(params: {
+  projects: Project[];
+  towers: Tower[];
+  flats: FlatUnit[];
+  tileZoneCatalog?: TileZoneDefinition[];
+  onlyActive?: boolean;
+}): ProjectCompletionPoint[] {
+  const {
+    projects,
+    towers,
+    flats,
+    tileZoneCatalog = TILE_ZONES,
+    onlyActive = true,
+  } = params;
+
+  const targetProjects = onlyActive
+    ? projects.filter((p) => p.status === 'active')
+    : projects;
+
+  return targetProjects.map((project) => {
+    const projTowers = towers.filter((t) => t.projectId === project.id);
+    const projFlats = flats.filter((f) => f.projectId === project.id);
+
+    let completedFlats = 0;
+    let inProgressFlats = 0;
+    let totalZones = 0;
+    let completedZones = 0;
+
+    for (const flat of projFlats) {
+      const prog = calculateFlatProgress(flat, tileZoneCatalog);
+      totalZones += prog.totalZones;
+      completedZones += prog.completedCount;
+      if (prog.totalZones > 0 && prog.completedCount === prog.totalZones) {
+        completedFlats += 1;
+      } else if (
+        prog.inProgressCount > 0 ||
+        prog.completedCount > 0 ||
+        prog.precheckingCount > 0 ||
+        prog.cleaningInProgressCount > 0
+      ) {
+        inProgressFlats += 1;
+      }
+    }
+
+    const completionPct =
+      totalZones > 0 ? Math.round((completedZones / totalZones) * 100) : 0;
+    const style = getProjectCompletionColor(completionPct);
+    const trimmedName = (project.name || 'Site').trim();
+    const shortName =
+      trimmedName.length > 18 ? `${trimmedName.slice(0, 16)}…` : trimmedName;
+
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      shortName,
+      location: project.location,
+      placeId: project.placeId,
+      status: project.status,
+      towersCount: projTowers.length,
+      totalFlats: projFlats.length,
+      completedFlats,
+      inProgressFlats,
+      totalZones,
+      completedZones,
+      completionPct,
+      tier: style.tier,
+      tierLabel: style.tierLabel,
+      colorHex: style.colorHex,
+      borderHex: style.borderHex,
+      badgeClass: style.badgeClass,
+    };
+  });
+}
+
+export const EMPLOYEE_PRESET_SKILL_TAGS = [
+  'Marble Specialist',
+  'Granite Cutter',
+  'Vitrified Tile Layer',
+  'Dado & Waterproofing',
+  'Skirting Specialist',
+  'Epoxy Grouting',
+  'Acid Wash & Cleaning',
+  'Italian Marble Polishing',
+  'Balcony & Slope Tiling',
+  'Floor Levelling',
+] as const;
+
+export function normalizeSkillTags(tags: string[] | undefined): string[] {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of tags) {
+    const t = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(t);
+    if (cleaned.length >= 20) break;
+  }
+  return cleaned;
+}
+
+export function filterEmployeesBySkillTags(
+  employees: Employee[],
+  selectedSkills: string[],
+  matchMode: 'any' | 'all' = 'any'
+): Employee[] {
+  const normalizedSelected = selectedSkills
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (normalizedSelected.length === 0) return employees;
+
+  return employees.filter((emp) => {
+    const empTags = new Set(
+      (emp.skillTags || []).map((t) => t.trim().toLowerCase()).filter(Boolean)
+    );
+    if (empTags.size === 0) return false;
+    if (matchMode === 'all') {
+      return normalizedSelected.every((s) => empTags.has(s));
+    }
+    return normalizedSelected.some((s) => empTags.has(s));
+  });
+}
+
+export function getCurrentHHMM(dateObj: Date = new Date()): string {
+  const hh = String(dateObj.getHours()).padStart(2, '0');
+  const mm = String(dateObj.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+export function normalizeHHMM(raw?: string): string {
+  const cleaned = (raw || '').trim();
+  const match = cleaned.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return '';
+  const hh = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const mm = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+export function computeWorkedHoursFromInOut(
+  inTime?: string,
+  outTime?: string
+): { valid: boolean; totalHours: number; overtimeHoursEstimate: number } {
+  const normIn = normalizeHHMM(inTime);
+  const normOut = normalizeHHMM(outTime);
+  if (!normIn || !normOut) {
+    return { valid: false, totalHours: 0, overtimeHoursEstimate: 0 };
+  }
+  const [inH, inM] = normIn.split(':').map(Number);
+  const [outH, outM] = normOut.split(':').map(Number);
+  let diffMins = outH * 60 + outM - (inH * 60 + inM);
+  if (diffMins < 0) diffMins += 24 * 60; // overnight shift safety
+  if (diffMins <= 0 || diffMins > 24 * 60) {
+    return { valid: false, totalHours: 0, overtimeHoursEstimate: 0 };
+  }
+  const totalHours = Number((diffMins / 60).toFixed(2));
+  const overtimeHoursEstimate = Number(Math.max(0, totalHours - 9).toFixed(1)); // 9h window including 1h lunch
+  return { valid: true, totalHours, overtimeHoursEstimate };
+}
+
+export function formatAttendanceInOutSummary(rec?: Pick<AttendanceRecord, 'inTime' | 'outTime'>): string {
+  if (!rec) return '—';
+  const i = normalizeHHMM(rec.inTime);
+  const o = normalizeHHMM(rec.outTime);
+  if (i && o) return `In ${i} · Out ${o}`;
+  if (i) return `In ${i} · Active`;
+  if (o) return `Out ${o}`;
+  return 'Time not logged';
+}
+
+export const SUPERVISOR_TOOL_PRESETS = [
+  'Diamond Cutting Blade',
+  'Tile Spacers & Leveling Wedges',
+  'Notched Trowel / Epoxy Float',
+  'Rubber Mallet & Spirit Level',
+  'Grinder Wheel / Core Drill Bit',
+  'Sponge, Acid Wash & Buckets',
+  'Laser Level Battery / Tape',
+] as const;
+
+export interface SupervisorToolSpendSummary {
+  totalCount: number;
+  totalAmount: number;
+  pendingCount: number;
+  pendingAmount: number;
+  approvedCount: number;
+  approvedAmount: number;
+  reimbursedCount: number;
+  reimbursedAmount: number;
+  rows: SiteExpense[];
+}
+
+export function summarizeSupervisorToolSpends(expenses: SiteExpense[]): SupervisorToolSpendSummary {
+  const rows = expenses
+    .filter((e) => e.recordedByRole === 'supervisor')
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+
+  let totalAmount = 0;
+  let pendingCount = 0;
+  let pendingAmount = 0;
+  let approvedCount = 0;
+  let approvedAmount = 0;
+  let reimbursedCount = 0;
+  let reimbursedAmount = 0;
+
+  for (const exp of rows) {
+    const amt = Number(exp.amount) || 0;
+    totalAmount += amt;
+    const status = exp.reimbursementStatus || 'pending_admin';
+    if (status === 'reimbursed') {
+      reimbursedCount += 1;
+      reimbursedAmount += amt;
+    } else if (status === 'approved') {
+      approvedCount += 1;
+      approvedAmount += amt;
+    } else {
+      pendingCount += 1;
+      pendingAmount += amt;
+    }
+  }
+
+  return {
+    totalCount: rows.length,
+    totalAmount,
+    pendingCount,
+    pendingAmount,
+    approvedCount,
+    approvedAmount,
+    reimbursedCount,
+    reimbursedAmount,
+    rows,
+  };
+}
+
+
 
 

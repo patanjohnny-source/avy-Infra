@@ -1,7 +1,60 @@
-import type { AttendanceRecord, Employee } from '../types/avy';
+import type { AttendanceRecord, Employee, Project, Tower } from '../types/avy';
 import type { AuthRole, WorkspaceSession } from './authAccess';
 import { canSupervisorUpdateEmployee } from './authAccess';
-import { decodeQrSnapshot, parseQrScanParams } from './qrProfile';
+import { decodeQrSnapshot, decodeSiteQrSnapshot, parseQrScanParams } from './qrProfile';
+
+export interface QuickScanSiteMatchResult {
+  ok: boolean;
+  projectId?: string;
+  towerId?: string;
+  projectName?: string;
+  towerName?: string;
+  checkpointLabel?: string;
+}
+
+/**
+ * Resolves a scanned Project Site / Tower QR payload so Quick Scan Attendance
+ * can automatically switch active site & tower when a gate QR is scanned.
+ */
+export function resolveSiteQrScanInput(
+  rawInput: string,
+  projects: Project[],
+  towers: Tower[]
+): QuickScanSiteMatchResult {
+  const cleaned = (rawInput || '').trim();
+  if (!cleaned || (!cleaned.includes('qrSite=') && !cleaned.includes('&s=') && !cleaned.includes('?s='))) {
+    return { ok: false };
+  }
+
+  const qIndex = cleaned.indexOf('?');
+  const searchPart = qIndex >= 0 ? cleaned.slice(qIndex) : `?${cleaned}`;
+  const scanParams = parseQrScanParams(searchPart);
+  if (scanParams.scanKind !== 'site') {
+    return { ok: false };
+  }
+
+  const decoded = decodeSiteQrSnapshot(scanParams.qrSiteEncoded);
+  const targetProjectId = scanParams.qrSite || decoded?.projectId || '';
+  const targetTowerId = scanParams.qrTower || decoded?.towerId;
+
+  const matchedProj = projects.find((p) => p.id === targetProjectId);
+  if (!matchedProj) {
+    return { ok: false };
+  }
+
+  const matchedTower = targetTowerId
+    ? towers.find((t) => t.id === targetTowerId && t.projectId === matchedProj.id)
+    : undefined;
+
+  return {
+    ok: true,
+    projectId: matchedProj.id,
+    towerId: matchedTower?.id,
+    projectName: matchedProj.name,
+    towerName: matchedTower?.name || decoded?.towerName,
+    checkpointLabel: decoded?.checkpointLabel || 'Site Checkpoint',
+  };
+}
 
 export interface QuickScanMatchResult {
   ok: boolean;
@@ -108,14 +161,21 @@ export function resolveQuickScanInput(
 
 export interface QuickScanValidationResult {
   canLog: boolean;
-  issue?: 'duplicate_in_session' | 'already_marked_today' | 'inactive_employee' | 'out_of_tower_scope';
+  issue?:
+    | 'duplicate_in_session'
+    | 'already_marked_today'
+    | 'not_checked_in_yet'
+    | 'already_checked_out'
+    | 'absent_cannot_checkout'
+    | 'inactive_employee'
+    | 'out_of_tower_scope';
   existingRecord?: AttendanceRecord;
   message?: string;
 }
 
 /**
  * Pure validation guard for a scanned worker during a Quick Scan Attendance session.
- * Prevents duplicate scans, respects inactive status, and enforces supervisor tower scope.
+ * Supports both Check-In (new daily entry) and Check-Out (closing today's shift with outTime).
  */
 export function validateQuickScanCandidate(params: {
   employee: Employee;
@@ -123,8 +183,16 @@ export function validateQuickScanCandidate(params: {
   existingAttendance: AttendanceRecord[];
   sessionLoggedIds: Set<string>;
   session?: { role: AuthRole; assignedTowerIds: string[] } | WorkspaceSession | null;
+  mode?: 'check_in' | 'check_out';
 }): QuickScanValidationResult {
-  const { employee, date, existingAttendance, sessionLoggedIds, session } = params;
+  const {
+    employee,
+    date,
+    existingAttendance,
+    sessionLoggedIds,
+    session,
+    mode = 'check_in',
+  } = params;
 
   if (employee.status !== 'active') {
     return {
@@ -154,13 +222,41 @@ export function validateQuickScanCandidate(params: {
     return {
       canLog: false,
       issue: 'duplicate_in_session',
-      message: `${employee.fullName} (${employee.empCode}) already scanned in this session.`,
+      message: `${employee.fullName} (${employee.empCode}) already scanned in this ${mode === 'check_out' ? 'check-out' : 'check-in'} session.`,
     };
   }
 
   const existing = existingAttendance.find(
     (a) => a.date === date && a.employeeId === employee.id
   );
+
+  if (mode === 'check_out') {
+    if (!existing) {
+      return {
+        canLog: false,
+        issue: 'not_checked_in_yet',
+        message: `${employee.fullName} has not checked in yet on ${date}.`,
+      };
+    }
+    if (existing.status === 'absent') {
+      return {
+        canLog: false,
+        issue: 'absent_cannot_checkout',
+        existingRecord: existing,
+        message: `${employee.fullName} is marked Absent on ${date}.`,
+      };
+    }
+    if (existing.outTime) {
+      return {
+        canLog: false,
+        issue: 'already_checked_out',
+        existingRecord: existing,
+        message: `${employee.fullName} already checked out at ${existing.outTime} on ${date}.`,
+      };
+    }
+    return { canLog: true, existingRecord: existing };
+  }
+
   if (existing) {
     return {
       canLog: false,
@@ -183,6 +279,9 @@ export interface QuickScanSessionItem {
   employeeName: string;
   role?: string;
   status: AttendanceRecord['status'];
+  inTime?: string;
+  outTime?: string;
+  mode?: 'check_in' | 'check_out';
   overtimeHours?: number;
   outcome: 'logged' | 'duplicate' | 'blocked' | 'undone';
   message: string;

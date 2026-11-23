@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   buildEmployeePayrollExpenseCsv,
   buildMailtoUrl,
+  buildMonthlyAttendanceAndPayrollCsv,
   buildWhatsappUrl,
   computeDailyWage,
+  computeDefaultHourlyOtRate,
   computeEmployeePayroll,
   computeIndividualEmployeePaymentDetails,
   computeMonthlyAttendanceMatrix,
@@ -429,3 +431,163 @@ test('WhatsApp phone sanitization and advance message formatting include custom 
   const url = buildWhatsappUrl('9876543210', msg);
   assert.ok(url.startsWith('https://wa.me/919876543210?text='));
 });
+
+test('computeDefaultHourlyOtRate converts daily wage to 8-hour OT rate cleanly', () => {
+  assert.equal(computeDefaultHourlyOtRate(950), 118.75);
+  assert.equal(computeDefaultHourlyOtRate(800), 100);
+  assert.equal(computeDefaultHourlyOtRate(0), 0);
+  assert.equal(computeDefaultHourlyOtRate(-500), 0);
+});
+
+test('buildMonthlyAttendanceAndPayrollCsv exports current month day statuses, payroll calculations, and respects hideSalary', () => {
+  const attendance: AttendanceRecord[] = [
+    {
+      id: 'att-nov-1',
+      ownerId: 'owner-1',
+      date: '2026-11-10',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      employeeRole: 'Mason',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      status: 'present',
+      overtimeHours: 2,
+      dailyWageEarned: 1000,
+      overtimePayEarned: 300,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'att-nov-2',
+      ownerId: 'owner-1',
+      date: '2026-11-11',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      employeeRole: 'Mason',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      status: 'half_day',
+      overtimeHours: 0,
+      dailyWageEarned: 500,
+      overtimePayEarned: 0,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'att-oct-ignored',
+      ownerId: 'owner-1',
+      date: '2026-10-20',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      employeeRole: 'Mason',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      status: 'present',
+      overtimeHours: 4,
+      dailyWageEarned: 1000,
+      overtimePayEarned: 600,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+  const advances: AdvanceEntry[] = [
+    {
+      id: 'adv-nov-1',
+      ownerId: 'owner-1',
+      date: '2026-11-10',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      employeePhone: '9876543210',
+      advanceType: 'daily_food',
+      amount: 150,
+      paymentMode: 'cash',
+      notes: '',
+      whatsappShared: true,
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'adv-oct-ignored',
+      ownerId: 'owner-1',
+      date: '2026-10-20',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      employeePhone: '9876543210',
+      advanceType: 'cash_advance',
+      amount: 999,
+      paymentMode: 'cash',
+      notes: '',
+      whatsappShared: true,
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+  const settlements: SettlementEntry[] = [
+    {
+      id: 'stl-nov-1',
+      ownerId: 'owner-1',
+      employeeId: 'emp-1',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Mistri',
+      periodStart: '2026-11-01',
+      periodEnd: '2026-11-15',
+      daysWorked: 1.5,
+      grossWages: 1500,
+      overtimePay: 300,
+      totalAdvances: 150,
+      netPaid: 400,
+      paymentMode: 'upi',
+      settledDate: '2026-11-15',
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+
+  const adminExport = buildMonthlyAttendanceAndPayrollCsv({
+    yearMonth: '2026-11',
+    employees: [sampleEmployee, secondEmployee],
+    attendance,
+    advances,
+    settlements,
+    projectIdFilter: 'all',
+    hideSalary: false,
+  });
+
+  assert.equal(adminExport.fileName, 'AVY_INFRA_Attendance_Payroll_2026-11.csv');
+  assert.equal(adminExport.rowCount, 2);
+  assert.ok(adminExport.csv.includes('Day 01'));
+  assert.ok(adminExport.csv.includes('Day 30'));
+  assert.ok(adminExport.csv.includes('Gross Wages (INR)'));
+  assert.ok(adminExport.csv.includes('Net Payable (INR)'));
+
+  const lines = adminExport.csv.replace(/^\uFEFF/, '').split('\n');
+  assert.equal(lines.length, 4); // header + 2 employees + TOTAL
+  assert.ok(lines[1].includes('AVY-MSN-001'));
+  assert.ok(lines[1].includes(',P,HD,')); // Day 10 Present, Day 11 Half Day
+  // Raju: 1500 gross + 300 OT = 1800 total earned; 150 adv; 400 settled; 1250 net payable
+  assert.ok(lines[1].includes(',1500,300,1800,150,0,0,0,150,400,1250'));
+  assert.ok(lines[3].startsWith(`${adminExport.monthLabel},TOTAL,2 Employees`));
+
+  const supervisorExport = buildMonthlyAttendanceAndPayrollCsv({
+    yearMonth: '2026-11',
+    employees: [sampleEmployee],
+    attendance,
+    advances,
+    settlements,
+    hideSalary: true,
+  });
+  assert.equal(supervisorExport.csv.includes('Daily Rate (INR)'), false);
+  assert.equal(supervisorExport.csv.includes('Net Payable (INR)'), false);
+  assert.ok(supervisorExport.csv.includes('Effective Days Worked'));
+});
+
+

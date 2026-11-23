@@ -1,10 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Archive,
   ArrowRightLeft,
   Briefcase,
   Building,
   CalendarCheck,
   Camera,
+  CheckCircle2,
   Download,
   FileText,
   History,
@@ -28,6 +30,7 @@ import { getTodayIso } from '../data/seedData';
 import type { Employee, EmployeeRole, WhatsappMessagePayload } from '../types/avy';
 import {
   canSupervisorUpdateEmployee,
+  canViewEmployeeFixedSalary,
   getScopedAdvances,
   getScopedAssignments,
   getScopedAttendance,
@@ -42,8 +45,14 @@ import {
   toggleBulkWorkerSelection,
 } from '../utils/bulkWorkerCards';
 import { compressImageToDataUrl, readDocumentAsDataUrl } from '../utils/idCardPdf';
-import { getTowerDeploymentCounts } from '../utils/operations';
 import {
+  EMPLOYEE_PRESET_SKILL_TAGS,
+  filterEmployeesBySkillTags,
+  getTowerDeploymentCounts,
+  normalizeSkillTags,
+} from '../utils/operations';
+import {
+  computeDefaultHourlyOtRate,
   computeEmployeePayroll,
   formatINR,
   formatPaymentSummaryWhatsappMessage,
@@ -51,9 +60,15 @@ import {
   getAdvanceCategoryLabel,
 } from '../utils/payroll';
 import { BulkWorkerCardsPrintPreview } from './BulkWorkerCardsPrintPreview';
+import {
+  RemoveEmployeeConfirmModal,
+  RemovedEmployeeBackupsModal,
+  triggerJsonBackupDownload,
+} from './EmployeeBackupModal';
 import { EmployeeIdCardModal } from './EmployeeIdCardModal';
 import { IndividualPaymentDetailsModal } from './IndividualPaymentDetailsModal';
 import { WorkforceQrPrintModal } from './WorkforceQrPrintModal';
+import { buildEmployeeBackupExportPayload } from '../utils/employeeBackup';
 
 const ROLES: EmployeeRole[] = [
   'Mason',
@@ -66,6 +81,7 @@ const ROLES: EmployeeRole[] = [
 const BLOOD_GROUPS = ['', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 
 interface WorkforceViewProps {
+  preselectedEmployee?: { employeeId: string; nonce: number };
   onOpenGiveAdvance: (employeeId?: string) => void;
   onOpenAssignWork: (employeeId?: string) => void;
   onOpenEmployeeAttendanceCard?: (employeeId: string) => void;
@@ -75,6 +91,7 @@ interface WorkforceViewProps {
 }
 
 export function WorkforceView({
+  preselectedEmployee,
   onOpenGiveAdvance,
   onOpenAssignWork,
   onOpenEmployeeAttendanceCard,
@@ -89,6 +106,7 @@ export function WorkforceView({
     towers: rawTowers,
     employees: rawEmployees,
     employeeDocuments,
+    removedEmployees,
     deployments: rawDeployments,
     assignments: rawAssignments,
     attendance: rawAttendance,
@@ -96,6 +114,9 @@ export function WorkforceView({
     settlements,
     addEmployee,
     updateEmployee,
+    removeEmployeeWithBackup,
+    restoreEmployeeBackup,
+    deleteEmployeeBackupPermanently,
     addEmployeeDocument,
     deleteEmployeeDocument,
     deployEmployeeToSite,
@@ -104,6 +125,7 @@ export function WorkforceView({
 
   const isAdmin = isAdminSession(session);
   const isSupervisor = isSupervisorSession(session);
+  const hideSalary = !canViewEmployeeFixedSalary(session);
 
   const projects = useMemo(
     () => getScopedProjects(session, rawProjects, rawTowers),
@@ -134,8 +156,21 @@ export function WorkforceView({
   const [roleFilter, setRoleFilter] = useState<'All' | EmployeeRole>('All');
   const [siteProjectFilter, setSiteProjectFilter] = useState<string>('all');
   const [siteTowerFilter, setSiteTowerFilter] = useState<string>('all');
+  const [skillFilter, setSkillFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEmpId, setSelectedEmpId] = useState<string>(employees[0]?.id || '');
+
+  useEffect(() => {
+    if (!preselectedEmployee) return;
+    if (employees.some((e) => e.id === preselectedEmployee.employeeId)) {
+      setRoleFilter('All');
+      setSiteProjectFilter('all');
+      setSiteTowerFilter('all');
+      setSkillFilter('all');
+      setSearchQuery('');
+      setSelectedEmpId(preselectedEmployee.employeeId);
+    }
+  }, [preselectedEmployee, employees]);
 
   // ID Card Preview, Batch QR Print & Bulk Worker Profile Cards
   const [idCardEmployee, setIdCardEmployee] = useState<Employee | null>(null);
@@ -144,6 +179,11 @@ export function WorkforceView({
   const [paymentDetailsEmpId, setPaymentDetailsEmpId] = useState<string | null>(null);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<string[]>([]);
   const [showBulkCardsModal, setShowBulkCardsModal] = useState(false);
+
+  // Worker Removal + Backup & Restore Modal State
+  const [removeTargetEmp, setRemoveTargetEmp] = useState<Employee | null>(null);
+  const [showBackupsModal, setShowBackupsModal] = useState(false);
+  const [actionNotice, setActionNotice] = useState('');
 
   // Add/Edit Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -155,8 +195,9 @@ export function WorkforceView({
   const [email, setEmail] = useState('');
   const [joiningDate, setJoiningDate] = useState(getTodayIso());
   const [dailyRate, setDailyRate] = useState('950');
-  const [overtimeRate, setOvertimeRate] = useState('140');
-  const [foodAllowanceDaily, setFoodAllowanceDaily] = useState('150');
+  const [overtimeRate, setOvertimeRate] = useState(String(computeDefaultHourlyOtRate(950)));
+  const [isOtAutoSynced, setIsOtAutoSynced] = useState(true);
+  const [foodAllowanceDaily, setFoodAllowanceDaily] = useState('0');
   const [aadharRef, setAadharRef] = useState('');
   const [pfNumber, setPfNumber] = useState('');
   const [esiNumber, setEsiNumber] = useState('');
@@ -165,6 +206,8 @@ export function WorkforceView({
   const [photoDataUrl, setPhotoDataUrl] = useState('');
   const [empProjectId, setEmpProjectId] = useState('');
   const [empTowerId, setEmpTowerId] = useState('');
+  const [skillTags, setSkillTags] = useState<string[]>([]);
+  const [customSkillInput, setCustomSkillInput] = useState('');
   const [notes, setNotes] = useState('');
   const [formError, setFormError] = useState('');
   const [savingEmployee, setSavingEmployee] = useState(false);
@@ -203,8 +246,21 @@ export function WorkforceView({
     return towers.filter((t) => t.projectId === siteProjectFilter);
   }, [towers, siteProjectFilter]);
 
+  const availableSkillTags = useMemo(
+    () =>
+      normalizeSkillTags([
+        ...EMPLOYEE_PRESET_SKILL_TAGS,
+        ...employees.flatMap((e) => e.skillTags || []),
+      ]),
+    [employees]
+  );
+
   const filteredEmployees = useMemo(() => {
-    return employees.filter((emp) => {
+    const skillScoped =
+      skillFilter !== 'all'
+        ? filterEmployeesBySkillTags(employees, [skillFilter], 'any')
+        : employees;
+    return skillScoped.filter((emp) => {
       if (roleFilter !== 'All' && emp.role !== roleFilter) return false;
       if (siteProjectFilter !== 'all' && emp.currentProjectId !== siteProjectFilter) return false;
       if (siteTowerFilter !== 'all' && emp.currentTowerId !== siteTowerFilter) return false;
@@ -217,12 +273,13 @@ export function WorkforceView({
           (emp.pfNumber || '').toLowerCase().includes(q) ||
           (emp.esiNumber || '').toLowerCase().includes(q) ||
           (emp.currentProjectName || '').toLowerCase().includes(q) ||
-          (emp.currentTowerName || '').toLowerCase().includes(q)
+          (emp.currentTowerName || '').toLowerCase().includes(q) ||
+          (emp.skillTags || []).some((t) => t.toLowerCase().includes(q))
         );
       }
       return true;
     });
-  }, [employees, roleFilter, siteProjectFilter, siteTowerFilter, searchQuery]);
+  }, [employees, roleFilter, siteProjectFilter, siteTowerFilter, skillFilter, searchQuery]);
 
   const bulkSelectedEmployees = useMemo(() => {
     const selectedSet = new Set(bulkSelectedIds);
@@ -279,6 +336,24 @@ export function WorkforceView({
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [advances, selectedEmployee]);
 
+  const removeTargetMetrics = useMemo(() => {
+    if (!removeTargetEmp) {
+      return { documentsCount: 0, attendanceCount: 0, totalAdvances: 0, netPayable: 0 };
+    }
+    const payroll = computeEmployeePayroll(
+      removeTargetEmp,
+      rawAttendance,
+      rawAdvances,
+      settlements
+    );
+    return {
+      documentsCount: employeeDocuments.filter((d) => d.employeeId === removeTargetEmp.id).length,
+      attendanceCount: rawAttendance.filter((a) => a.employeeId === removeTargetEmp.id).length,
+      totalAdvances: payroll.totalAdvances,
+      netPayable: payroll.netPayable,
+    };
+  }, [removeTargetEmp, rawAttendance, rawAdvances, settlements, employeeDocuments]);
+
   const modalProjectTowers = useMemo(
     () => towers.filter((t) => t.projectId === empProjectId),
     [towers, empProjectId]
@@ -292,6 +367,7 @@ export function WorkforceView({
   const openCreateModal = () => {
     const defProj = projects[0]?.id || '';
     const defTwr = towers.find((t) => t.projectId === defProj)?.id || '';
+    const defaultDaily = 950;
     setEditingEmp(null);
     setFullName('');
     setRole('Mason');
@@ -299,9 +375,10 @@ export function WorkforceView({
     setAlternatePhone('');
     setEmail('');
     setJoiningDate(getTodayIso());
-    setDailyRate('950');
-    setOvertimeRate('140');
-    setFoodAllowanceDaily('150');
+    setDailyRate(String(defaultDaily));
+    setOvertimeRate(String(computeDefaultHourlyOtRate(defaultDaily)));
+    setIsOtAutoSynced(true);
+    setFoodAllowanceDaily('0');
     setAadharRef('');
     setPfNumber('');
     setEsiNumber('');
@@ -310,6 +387,8 @@ export function WorkforceView({
     setPhotoDataUrl('');
     setEmpProjectId(defProj);
     setEmpTowerId(defTwr);
+    setSkillTags([]);
+    setCustomSkillInput('');
     setNotes('');
     setFormError('');
     setShowAddModal(true);
@@ -327,6 +406,7 @@ export function WorkforceView({
     setJoiningDate(emp.joiningDate);
     setDailyRate(String(emp.dailyRate));
     setOvertimeRate(String(emp.overtimeRate));
+    setIsOtAutoSynced(emp.overtimeRate === computeDefaultHourlyOtRate(emp.dailyRate));
     setFoodAllowanceDaily(String(emp.foodAllowanceDaily));
     setAadharRef(emp.aadharRef);
     setPfNumber(emp.pfNumber || '');
@@ -336,6 +416,8 @@ export function WorkforceView({
     setPhotoDataUrl(emp.photoDataUrl || '');
     setEmpProjectId(projId);
     setEmpTowerId(twrId);
+    setSkillTags(normalizeSkillTags(emp.skillTags));
+    setCustomSkillInput('');
     setNotes(emp.notes);
     setFormError('');
     setShowAddModal(true);
@@ -376,6 +458,7 @@ export function WorkforceView({
 
     setSavingEmployee(true);
     try {
+      const normalizedSkills = normalizeSkillTags(skillTags);
       if (editingEmp) {
         await updateEmployee(editingEmp.id, {
           fullName: fullName.trim(),
@@ -384,9 +467,11 @@ export function WorkforceView({
           alternatePhone: alternatePhone.trim(),
           email: email.trim(),
           joiningDate,
-          dailyRate: Number(dailyRate) || 0,
-          overtimeRate: Number(overtimeRate) || 0,
-          foodAllowanceDaily: Number(foodAllowanceDaily) || 0,
+          dailyRate: hideSalary ? editingEmp.dailyRate : Number(dailyRate) || 0,
+          overtimeRate: hideSalary ? editingEmp.overtimeRate : Number(overtimeRate) || 0,
+          foodAllowanceDaily: hideSalary
+            ? editingEmp.foodAllowanceDaily
+            : Number(foodAllowanceDaily) || 0,
           aadharRef: aadharRef.trim(),
           pfNumber: pfNumber.trim(),
           esiNumber: esiNumber.trim(),
@@ -397,6 +482,7 @@ export function WorkforceView({
           currentProjectName: projObj?.name || '',
           currentTowerId: twrObj?.id || '',
           currentTowerName: twrObj?.name || '',
+          skillTags: normalizedSkills,
           notes: notes.trim(),
         });
       } else {
@@ -418,6 +504,7 @@ export function WorkforceView({
           photoDataUrl,
           currentProjectId: projObj?.id || '',
           currentTowerId: twrObj?.id || '',
+          skillTags: normalizedSkills,
           notes: notes.trim(),
         });
         setSelectedEmpId(created.id);
@@ -500,17 +587,29 @@ export function WorkforceView({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            Workforce, Statutory IDs &amp; Site Deployment
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Register staff with photo, Aadhaar PDF, PF/ESI &amp; blood group, generate Front &amp; Back ID cards, and transfer crews across projects &amp; towers.
-          </p>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+          <div className="min-w-0 max-w-2xl">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+              Workforce, Statutory IDs &amp; Site Deployment
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Register staff with photo, Aadhaar PDF, PF/ESI &amp; blood group, generate Front &amp; Back ID cards, and transfer crews across projects &amp; towers.
+            </p>
+          </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={openCreateModal}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 transition-colors whitespace-nowrap self-start lg:self-auto shrink-0"
+            >
+              <Plus className="w-4 h-4" aria-hidden="true" />
+              <span>Add Employee</span>
+            </button>
+          )}
         </div>
         {isAdmin ? (
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               data-testid="header-bulk-profile-cards-btn"
@@ -569,11 +668,12 @@ export function WorkforceView({
             </button>
             <button
               type="button"
-              onClick={openCreateModal}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 transition-colors whitespace-nowrap"
+              data-testid="open-removed-backups-btn"
+              onClick={() => setShowBackupsModal(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
             >
-              <Plus className="w-4 h-4" aria-hidden="true" />
-              <span>Add Employee</span>
+              <Archive className="w-4 h-4 text-orange-700" aria-hidden="true" />
+              <span>Removed Backups ({removedEmployees.length})</span>
             </button>
           </div>
         ) : (
@@ -610,6 +710,37 @@ export function WorkforceView({
         )}
       </div>
 
+      {actionNotice && (
+        <div
+          data-testid="workforce-backup-notice"
+          className="px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-md flex items-center justify-between gap-3 text-xs font-medium text-emerald-950"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" aria-hidden="true" />
+            <span>{actionNotice}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowBackupsModal(true)}
+                className="text-emerald-800 underline hover:text-emerald-950"
+              >
+                Open Backups ({removedEmployees.length})
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setActionNotice('')}
+              aria-label="Dismiss backup notice"
+              className="p-1 text-emerald-700 hover:text-emerald-950"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Role Tabs + Project/Tower Site Filter + Search */}
       <div className="bg-white border border-slate-200 rounded-lg p-3.5 space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -643,8 +774,8 @@ export function WorkforceView({
           </div>
         </div>
 
-        {/* Filter by Current Project & Tower */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2 border-t border-slate-100">
+        {/* Filter by Current Project, Tower & Skill Tag */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
           <div>
             <label htmlFor="wf-site-proj" className="block text-[11px] font-medium text-slate-500 mb-1">
               Working Project Site Filter
@@ -680,6 +811,24 @@ export function WorkforceView({
               {filterTowers.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="wf-skill-filter" className="block text-[11px] font-medium text-slate-500 mb-1">
+              Skill Tag Filter
+            </label>
+            <select
+              id="wf-skill-filter"
+              value={skillFilter}
+              onChange={(e) => setSkillFilter(e.target.value)}
+              className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+            >
+              <option value="all">All Skill Proficiencies</option>
+              {availableSkillTags.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
                 </option>
               ))}
             </select>
@@ -836,7 +985,7 @@ export function WorkforceView({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-500">
-                  <th className="py-2.5 pl-4 pr-2 w-10">
+                  <th className="py-2.5 pl-3 pr-1.5 w-8">
                     <input
                       type="checkbox"
                       aria-label="Select all visible workers for bulk profile card printing"
@@ -853,17 +1002,21 @@ export function WorkforceView({
                       className="rounded border-slate-300 text-orange-700 cursor-pointer"
                     />
                   </th>
-                  <th className="py-2.5 px-3">Staff ID</th>
-                  <th className="py-2.5 px-3">Name &amp; Current Site</th>
-                  <th className="py-2.5 px-3 text-right">Daily Rate</th>
-                  <th className="py-2.5 px-3 text-right">Net Payable</th>
-                  <th className="py-2.5 px-4 text-right">Actions</th>
+                  <th className="py-2.5 px-2">Staff ID</th>
+                  <th className="py-2.5 px-2">Name &amp; Site</th>
+                  {!hideSalary && (
+                    <>
+                      <th className="py-2.5 px-2 text-right">Daily</th>
+                      <th className="py-2.5 px-2 text-right">Net Pay</th>
+                    </>
+                  )}
+                  <th className="py-2.5 pl-2 pr-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">
                 {filteredEmployees.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-10 text-center text-slate-500">
+                    <td colSpan={hideSalary ? 4 : 6} className="py-10 text-center text-slate-500">
                       No employees match your filters.
                     </td>
                   </tr>
@@ -889,7 +1042,7 @@ export function WorkforceView({
                               : 'hover:bg-slate-50'
                         }`}
                       >
-                        <td className="py-3 pl-4 pr-2 align-middle">
+                        <td className="py-3 pl-3 pr-1.5 align-middle">
                           <input
                             type="checkbox"
                             aria-label={`Select ${emp.fullName} for bulk profile card print`}
@@ -900,14 +1053,14 @@ export function WorkforceView({
                             className="rounded border-slate-300 text-orange-700 cursor-pointer"
                           />
                         </td>
-                        <td className="py-3 px-3 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
+                        <td className="py-3 px-2 font-mono text-xs font-semibold text-slate-800 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => setSelectedEmpId(emp.id)}
                             aria-label={`View profile for ${emp.fullName}`}
-                            className="inline-flex items-center gap-2 text-left hover:text-orange-700"
+                            className="inline-flex items-center gap-1.5 text-left hover:text-orange-700"
                           >
-                            <span className="w-7 h-7 rounded-full border border-slate-200 bg-slate-100 overflow-hidden flex items-center justify-center text-[10px] font-bold text-slate-600 shrink-0">
+                            <span className="w-6 h-6 rounded-full border border-slate-200 bg-slate-100 overflow-hidden flex items-center justify-center text-[10px] font-bold text-slate-600 shrink-0">
                               {emp.photoDataUrl ? (
                                 <img
                                   src={emp.photoDataUrl}
@@ -923,7 +1076,7 @@ export function WorkforceView({
                             </span>
                           </button>
                         </td>
-                        <td className="py-3 px-3">
+                        <td className="py-3 px-2 min-w-[130px]">
                           <button
                             type="button"
                             onClick={() => setSelectedEmpId(emp.id)}
@@ -939,16 +1092,37 @@ export function WorkforceView({
                                 </span>
                               )}
                             </div>
+                            {emp.skillTags && emp.skillTags.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {emp.skillTags.slice(0, 3).map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="inline-block px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200 rounded"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {emp.skillTags.length > 3 && (
+                                  <span className="inline-block px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-slate-100 rounded">
+                                    +{emp.skillTags.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </button>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-700 whitespace-nowrap">
-                          {formatINR(emp.dailyRate)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                          {formatINR(summary.netPayable)}
-                        </td>
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="inline-flex items-center gap-1">
+                        {!hideSalary && (
+                          <>
+                            <td className="py-3 px-2 text-right font-mono text-xs tabular-nums text-slate-700 whitespace-nowrap">
+                              {formatINR(emp.dailyRate)}
+                            </td>
+                            <td className="py-3 px-2 text-right font-mono text-xs tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                              {formatINR(summary.netPayable)}
+                            </td>
+                          </>
+                        )}
+                        <td className="py-3 pl-2 pr-3 text-right">
+                          <div className="inline-flex flex-wrap justify-end items-center gap-1">
                             <button
                               type="button"
                               onClick={() => setIdCardEmployee(emp)}
@@ -989,14 +1163,27 @@ export function WorkforceView({
                             >
                               Advance
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSharePaymentWhatsapp(emp)}
-                              aria-label={`Share payment info on WhatsApp or Email for ${emp.fullName}`}
-                              className="p-1.5 text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
-                            </button>
+                            {!hideSalary && (
+                              <button
+                                type="button"
+                                onClick={() => handleSharePaymentWhatsapp(emp)}
+                                aria-label={`Share payment info on WhatsApp or Email for ${emp.fullName}`}
+                                className="p-1.5 text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => setRemoveTargetEmp(emp)}
+                                aria-label={`Remove ${emp.fullName} with backup`}
+                                title="Remove user & save automatic backup"
+                                className="p-1.5 text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1142,35 +1329,64 @@ export function WorkforceView({
                     Edit Record
                   </button>
                 )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    data-testid="detail-remove-worker-backup-btn"
+                    onClick={() => setRemoveTargetEmp(selectedEmployee)}
+                    title="Remove user from Workforce & save automatic backup"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 whitespace-nowrap"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Remove User</span>
+                  </button>
+                )}
               </div>
 
-              {/* Payment Structure KPIs */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pb-4 border-b border-slate-100">
-                <div>
-                  <div className="text-[11px] text-slate-500">Daily Wage</div>
-                  <div className="text-sm font-mono tabular-nums font-semibold text-slate-900">
-                    {formatINR(selectedEmployee.dailyRate)}
+              {/* Payment / Advances KPIs */}
+              {hideSalary ? (
+                <div className="grid grid-cols-2 gap-3 pb-4 border-b border-slate-100">
+                  <div>
+                    <div className="text-[11px] text-slate-500">Total Advances</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-red-700">
+                      {formatINR(selectedEmpPayroll.totalAdvances)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">Days Attended</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-slate-900">
+                      {selectedEmpPayroll.effectiveDaysWorked}d ({selectedEmpPayroll.presentDays}P · {selectedEmpPayroll.halfDays}HD)
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="text-[11px] text-slate-500">OT Rate / Hr</div>
-                  <div className="text-sm font-mono tabular-nums font-semibold text-slate-900">
-                    {formatINR(selectedEmployee.overtimeRate)}
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pb-4 border-b border-slate-100">
+                  <div>
+                    <div className="text-[11px] text-slate-500">Daily Wage</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-slate-900">
+                      {formatINR(selectedEmployee.dailyRate)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">OT Rate / Hr</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-slate-900">
+                      {formatINR(selectedEmployee.overtimeRate)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">Total Advances</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-red-700">
+                      {formatINR(selectedEmpPayroll.totalAdvances)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-slate-500">Net Payable</div>
+                    <div className="text-sm font-mono tabular-nums font-semibold text-emerald-800">
+                      {formatINR(selectedEmpPayroll.netPayable)}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="text-[11px] text-slate-500">Total Advances</div>
-                  <div className="text-sm font-mono tabular-nums font-semibold text-red-700">
-                    {formatINR(selectedEmpPayroll.totalAdvances)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500">Net Payable</div>
-                  <div className="text-sm font-mono tabular-nums font-semibold text-emerald-800">
-                    {formatINR(selectedEmpPayroll.netPayable)}
-                  </div>
-                </div>
-              </div>
+              )}
 
               {/* Statutory & Contact Information */}
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs pb-4 border-b border-slate-100">
@@ -1210,6 +1426,21 @@ export function WorkforceView({
                     <dd className="text-slate-900 inline">{selectedEmployee.email}</dd>
                   </div>
                 )}
+                {selectedEmployee.skillTags && selectedEmployee.skillTags.length > 0 && (
+                  <div className="sm:col-span-2 pt-1">
+                    <dt className="text-slate-500 block mb-1">Skill Tags:</dt>
+                    <dd className="flex flex-wrap gap-1.5">
+                      {selectedEmployee.skillTags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="px-2 py-0.5 text-[11px] font-medium bg-amber-50 text-amber-900 border border-amber-200 rounded"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </dd>
+                  </div>
+                )}
                 {selectedEmployee.notes && (
                   <div className="sm:col-span-2">
                     <dt className="text-slate-500 inline">Notes: </dt>
@@ -1236,14 +1467,16 @@ export function WorkforceView({
                   <Wallet className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>Give Advance</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleSharePaymentWhatsapp(selectedEmployee)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 whitespace-nowrap"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Share Payment</span>
-                </button>
+                {!hideSalary && (
+                  <button
+                    type="button"
+                    onClick={() => handleSharePaymentWhatsapp(selectedEmployee)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 whitespace-nowrap"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Share Payment</span>
+                  </button>
+                )}
               </div>
 
               {/* Aadhaar PDF & Other Documents Section */}
@@ -1632,51 +1865,80 @@ export function WorkforceView({
                 </div>
               </div>
 
-              {/* Wage Structure */}
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label htmlFor="emp-rate" className="block text-xs font-medium text-slate-700 mb-1">
-                    Daily Rate (₹)
-                  </label>
-                  <input
-                    id="emp-rate"
-                    type="number"
-                    min="0"
-                    disabled={isSupervisor}
-                    value={dailyRate}
-                    onChange={(e) => setDailyRate(e.target.value)}
-                    className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
-                  />
+              {/* Wage Structure (Admin Only — hidden from Supervisors) */}
+              {!hideSalary && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label htmlFor="emp-rate" className="block text-xs font-medium text-slate-700 mb-1">
+                      Daily Rate (₹)
+                    </label>
+                    <input
+                      id="emp-rate"
+                      type="number"
+                      min="0"
+                      step="any"
+                      disabled={isSupervisor}
+                      value={dailyRate}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setDailyRate(val);
+                        if (!editingEmp || isOtAutoSynced) {
+                          setOvertimeRate(String(computeDefaultHourlyOtRate(Number(val))));
+                        }
+                      }}
+                      className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label htmlFor="emp-ot" className="block text-xs font-medium text-slate-700">
+                        OT / Hr (₹)
+                      </label>
+                      {!isSupervisor && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOvertimeRate(
+                              String(computeDefaultHourlyOtRate(Number(dailyRate)))
+                            );
+                            setIsOtAutoSynced(true);
+                          }}
+                          className="text-[10px] font-medium text-orange-700 hover:underline"
+                        >
+                          Auto (Daily ÷ 8)
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      id="emp-ot"
+                      type="number"
+                      min="0"
+                      step="any"
+                      disabled={isSupervisor}
+                      value={overtimeRate}
+                      onChange={(e) => {
+                        setIsOtAutoSynced(false);
+                        setOvertimeRate(e.target.value);
+                      }}
+                      className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="emp-food" className="block text-xs font-medium text-slate-700 mb-1">
+                      Daily Food (₹)
+                    </label>
+                    <input
+                      id="emp-food"
+                      type="number"
+                      min="0"
+                      disabled={isSupervisor}
+                      value={foodAllowanceDaily}
+                      onChange={(e) => setFoodAllowanceDaily(e.target.value)}
+                      className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label htmlFor="emp-ot" className="block text-xs font-medium text-slate-700 mb-1">
-                    OT / Hr (₹)
-                  </label>
-                  <input
-                    id="emp-ot"
-                    type="number"
-                    min="0"
-                    disabled={isSupervisor}
-                    value={overtimeRate}
-                    onChange={(e) => setOvertimeRate(e.target.value)}
-                    className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="emp-food" className="block text-xs font-medium text-slate-700 mb-1">
-                    Daily Food (₹)
-                  </label>
-                  <input
-                    id="emp-food"
-                    type="number"
-                    min="0"
-                    disabled={isSupervisor}
-                    value={foodAllowanceDaily}
-                    onChange={(e) => setFoodAllowanceDaily(e.target.value)}
-                    className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-300 rounded-md disabled:bg-slate-100"
-                  />
-                </div>
-              </div>
+              )}
 
               {/* Statutory PF, ESI, Aadhaar, Family Contact */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1778,6 +2040,104 @@ export function WorkforceView({
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              {/* Skill Tags */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-slate-700">
+                    Skill Tags / Work Proficiencies
+                  </span>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {skillTags.length} selected
+                  </span>
+                </div>
+
+                {skillTags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {skillTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-900 border border-orange-300 rounded"
+                      >
+                        <span>{tag}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSkillTags((prev) => prev.filter((t) => t !== tag))
+                          }
+                          aria-label={`Remove skill tag ${tag}`}
+                          className="text-orange-800 hover:text-red-700"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-1.5">
+                  {EMPLOYEE_PRESET_SKILL_TAGS.map((preset) => {
+                    const active = skillTags.some(
+                      (t) => t.toLowerCase() === preset.toLowerCase()
+                    );
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() =>
+                          setSkillTags((prev) =>
+                            active
+                              ? prev.filter((t) => t.toLowerCase() !== preset.toLowerCase())
+                              : normalizeSkillTags([...prev, preset])
+                          )
+                        }
+                        className={`px-2 py-1 text-[11px] font-medium rounded border transition-colors ${
+                          active
+                            ? 'bg-orange-700 text-white border-orange-700'
+                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {active ? `✓ ${preset}` : `+ ${preset}`}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <input
+                    id="emp-custom-skill"
+                    type="text"
+                    aria-label="Add custom skill tag"
+                    value={customSkillInput}
+                    onChange={(e) => setCustomSkillInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const cleaned = customSkillInput.trim();
+                        if (cleaned) {
+                          setSkillTags((prev) => normalizeSkillTags([...prev, cleaned]));
+                          setCustomSkillInput('');
+                        }
+                      }
+                    }}
+                    placeholder="Add custom skill tag (e.g. Mosaic Inlay)..."
+                    className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cleaned = customSkillInput.trim();
+                      if (cleaned) {
+                        setSkillTags((prev) => normalizeSkillTags([...prev, cleaned]));
+                        setCustomSkillInput('');
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-100 whitespace-nowrap"
+                  >
+                    Add Skill
+                  </button>
                 </div>
               </div>
 
@@ -2240,6 +2600,60 @@ export function WorkforceView({
         isOpen={showBulkCardsModal}
         onClose={() => setShowBulkCardsModal(false)}
         selectedEmployees={bulkSelectedEmployees}
+      />
+
+      {/* Confirm Remove Worker + Automatic Backup Modal */}
+      <RemoveEmployeeConfirmModal
+        employee={removeTargetEmp}
+        documentsCount={removeTargetMetrics.documentsCount}
+        attendanceCount={removeTargetMetrics.attendanceCount}
+        totalAdvances={removeTargetMetrics.totalAdvances}
+        netPayable={removeTargetMetrics.netPayable}
+        onCancel={() => setRemoveTargetEmp(null)}
+        onConfirm={async ({ removalReason, downloadJson }) => {
+          if (!removeTargetEmp) return;
+          const targetId = removeTargetEmp.id;
+          const savedBackup = await removeEmployeeWithBackup({
+            employeeId: targetId,
+            removalReason,
+          });
+          if (downloadJson) {
+            const { filename, json } = buildEmployeeBackupExportPayload({
+              backups: [savedBackup],
+              companyName: companyProfile.companyName,
+            });
+            triggerJsonBackupDownload(filename, json);
+          }
+          setBulkSelectedIds((prev) => prev.filter((id) => id !== targetId));
+          if (selectedEmpId === targetId) {
+            const nextEmp = employees.find((e) => e.id !== targetId);
+            setSelectedEmpId(nextEmp?.id || '');
+          }
+          setRemoveTargetEmp(null);
+          setActionNotice(
+            `Removed ${savedBackup.fullName} (${savedBackup.empCode}) from active roster. Automatic backup saved to Removed Backups.${downloadJson ? ' JSON backup downloaded.' : ''}`
+          );
+        }}
+      />
+
+      {/* Removed Worker Backups Vault / Restore / Export / Import Modal */}
+      <RemovedEmployeeBackupsModal
+        isOpen={showBackupsModal}
+        backups={removedEmployees}
+        companyName={companyProfile.companyName}
+        ownerId={companyProfile.ownerId}
+        onClose={() => setShowBackupsModal(false)}
+        onRestore={async (backupOrId) => {
+          const res = await restoreEmployeeBackup(backupOrId);
+          setSelectedEmpId(res.employee.id);
+          setActionNotice(
+            `Restored ${res.employee.fullName} (${res.employee.empCode}) back into Workforce & IDs.`
+          );
+          return res;
+        }}
+        onDeleteForever={async (backupId) => {
+          await deleteEmployeeBackupPermanently(backupId);
+        }}
       />
     </div>
   );

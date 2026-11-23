@@ -2,17 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeExecutiveSummaryMetrics,
+  computeOverviewKpis,
   computeProjectAndTowerExpenses,
+  computeProjectCompletionSeries,
   computeProjectWorkStatusOverview,
   computeSingleEmployeeAttendanceCard,
   computeTowerAttendanceSummary,
   computeTowerFoodExpenseBreakdown,
+  computeWorkedHoursFromInOut,
+  filterEmployeesBySkillTags,
   findActiveUnfinishedAssignment,
+  formatAttendanceInOutSummary,
   formatDurationBreakdown,
   getExpenseCategoryLabel,
+  getProjectCompletionColor,
   getTowerDeploymentCounts,
   getWeeklyWindowForDate,
   isSundayDate,
+  normalizeHHMM,
+  normalizeSkillTags,
+  summarizeSupervisorToolSpends,
 } from './operations';
 import type {
   AdvanceEntry,
@@ -982,6 +991,231 @@ test('computeProjectWorkStatusOverview filters Electrical Room 1/2 and Lift Lobb
     ['Lift Lobby Flooring', 'Lift Lobby Skirting']
   );
 });
+
+test('computeOverviewKpis aggregates active projects, workforce, today attendance pct, and pending food advances', () => {
+  const projects: Project[] = [
+    { id: 'p1', ownerId: 'u1', name: 'Site A', location: 'Hyd', clientName: 'C1', status: 'active', createdAt: '', updatedAt: '' },
+    { id: 'p2', ownerId: 'u1', name: 'Site B', location: 'Hyd', clientName: 'C2', status: 'completed', createdAt: '', updatedAt: '' },
+  ];
+  const employees: Employee[] = [
+    { id: 'e1', ownerId: 'u1', empCode: 'E1', fullName: 'Raju', role: 'Mason', phone: '9999999991', joiningDate: '', dailyRate: 900, overtimeRate: 120, foodAllowanceDaily: 150, aadharRef: '', emergencyContact: '', status: 'active', notes: '', createdAt: '', updatedAt: '' },
+    { id: 'e2', ownerId: 'u1', empCode: 'E2', fullName: 'Suresh', role: 'Helper', phone: '9999999992', joiningDate: '', dailyRate: 600, overtimeRate: 90, foodAllowanceDaily: 150, aadharRef: '', emergencyContact: '', status: 'active', notes: '', createdAt: '', updatedAt: '' },
+    { id: 'e3', ownerId: 'u1', empCode: 'E3', fullName: 'Inactive', role: 'Helper', phone: '9999999993', joiningDate: '', dailyRate: 600, overtimeRate: 90, foodAllowanceDaily: 150, aadharRef: '', emergencyContact: '', status: 'inactive', notes: '', createdAt: '', updatedAt: '' },
+  ];
+  const attendance: AttendanceRecord[] = [
+    { id: 'a1', ownerId: 'u1', date: '2026-11-22', employeeId: 'e1', empCode: 'E1', employeeName: 'Raju', employeeRole: 'Mason', projectId: 'p1', projectName: 'Site A', status: 'present', overtimeHours: 0, dailyWageEarned: 900, overtimePayEarned: 0, notes: '', createdAt: '', updatedAt: '' },
+  ];
+  const advances: AdvanceEntry[] = [
+    { id: 'adv1', ownerId: 'u1', date: '2026-11-22', employeeId: 'e1', empCode: 'E1', employeeName: 'Raju', employeePhone: '9999999991', advanceType: 'weekly_food', amount: 1200, paymentMode: 'upi', notes: '', whatsappShared: true, approvalStatus: 'pending_admin', acknowledged: false, createdAt: '', updatedAt: '' },
+    { id: 'adv2', ownerId: 'u1', date: '2026-11-21', employeeId: 'e2', empCode: 'E2', employeeName: 'Suresh', employeePhone: '9999999992', advanceType: 'daily_food', amount: 200, paymentMode: 'cash', notes: '', whatsappShared: false, acknowledged: true, approvalStatus: 'approved', createdAt: '', updatedAt: '' },
+    { id: 'adv3', ownerId: 'u1', date: '2026-11-20', employeeId: 'e2', empCode: 'E2', employeeName: 'Suresh', employeePhone: '9999999992', advanceType: 'weekly_food', amount: 800, paymentMode: 'cash', notes: '', whatsappShared: false, acknowledged: false, approvalStatus: 'rejected', createdAt: '', updatedAt: '' },
+  ];
+
+  const kpis = computeOverviewKpis({
+    projects,
+    employees,
+    attendance,
+    advances,
+    date: '2026-11-22',
+  });
+
+  assert.equal(kpis.activeProjectsCount, 1);
+  assert.equal(kpis.totalProjectsCount, 2);
+  assert.equal(kpis.activeWorkforceCount, 2);
+  assert.equal(kpis.totalWorkforceCount, 3);
+  assert.equal(kpis.todayAttendedCount, 1);
+  assert.equal(kpis.todayEligibleCount, 2);
+  assert.equal(kpis.todayAttendancePct, 50);
+  assert.equal(kpis.pendingFoodAdvancesCount, 1);
+  assert.equal(kpis.pendingFoodAdvancesAmount, 1200);
+  assert.equal(kpis.pendingApprovalFoodCount, 1);
+});
+
+test('computeProjectCompletionSeries computes completion percentages and color-coded status tiers accurately', () => {
+  assert.equal(getProjectCompletionColor(80).tier, 'high');
+  assert.equal(getProjectCompletionColor(50).tier, 'medium');
+  assert.equal(getProjectCompletionColor(15).tier, 'low');
+
+  const projects: Project[] = [
+    { id: 'p_high', ownerId: 'u1', name: 'Green Site', location: 'Hyd', clientName: 'C1', status: 'active', createdAt: '', updatedAt: '' },
+    { id: 'p_med', ownerId: 'u1', name: 'Amber Site', location: 'Hyd', clientName: 'C2', status: 'active', createdAt: '', updatedAt: '' },
+    { id: 'p_low', ownerId: 'u1', name: 'Red Site', location: 'Hyd', clientName: 'C3', status: 'active', createdAt: '', updatedAt: '' },
+  ];
+  const towers: Tower[] = [
+    { id: 't1', ownerId: 'u1', projectId: 'p_high', name: 'T1', totalFloors: 1, unitsPerFloor: 1, createdAt: '', updatedAt: '' },
+    { id: 't2', ownerId: 'u1', projectId: 'p_med', name: 'T2', totalFloors: 1, unitsPerFloor: 1, createdAt: '', updatedAt: '' },
+    { id: 't3', ownerId: 'u1', projectId: 'p_low', name: 'T3', totalFloors: 1, unitsPerFloor: 1, createdAt: '', updatedAt: '' },
+  ];
+  const flats: FlatUnit[] = [
+    {
+      id: 'f1', ownerId: 'u1', projectId: 'p_high', towerId: 't1', floorNumber: 1, unitNumber: '101', unitType: '3 BHK',
+      zones: { a: { status: 'completed', sqft: 100 }, b: { status: 'completed', sqft: 100 }, c: { status: 'qc_approved', sqft: 100 }, d: { status: 'completed', sqft: 100 } },
+      createdAt: '', updatedAt: '',
+    },
+    {
+      id: 'f2', ownerId: 'u1', projectId: 'p_med', towerId: 't2', floorNumber: 1, unitNumber: '101', unitType: '3 BHK',
+      zones: { a: { status: 'completed', sqft: 100 }, b: { status: 'in_progress', sqft: 100 } },
+      createdAt: '', updatedAt: '',
+    },
+    {
+      id: 'f3', ownerId: 'u1', projectId: 'p_low', towerId: 't3', floorNumber: 1, unitNumber: '101', unitType: '3 BHK',
+      zones: { a: { status: 'not_started', sqft: 100 }, b: { status: 'not_started', sqft: 100 }, c: { status: 'not_started', sqft: 100 }, d: { status: 'not_started', sqft: 100 } },
+      createdAt: '', updatedAt: '',
+    },
+  ];
+
+  const series = computeProjectCompletionSeries({
+    projects,
+    towers,
+    flats,
+    tileZoneCatalog: [],
+  });
+  assert.equal(series.length, 3);
+  assert.equal(series[0].completionPct, 100);
+  assert.equal(series[0].tier, 'high');
+  assert.equal(series[0].completedFlats, 1);
+  assert.equal(series[1].completionPct, 50);
+  assert.equal(series[1].tier, 'medium');
+  assert.equal(series[2].completionPct, 0);
+  assert.equal(series[2].tier, 'low');
+});
+
+test('normalizeSkillTags and filterEmployeesBySkillTags filter workers accurately by proficiencies', () => {
+  const tags = normalizeSkillTags([' Marble Specialist ', 'Granite Cutter', 'marble specialist', '  ']);
+  assert.deepEqual(tags, ['Marble Specialist', 'Granite Cutter']);
+
+  const e1: Employee = {
+    id: 'e1',
+    ownerId: 'u1',
+    empCode: 'AVY-MSN-001',
+    fullName: 'Raju Mistri',
+    role: 'Mason',
+    phone: '9876543210',
+    joiningDate: '',
+    dailyRate: 950,
+    overtimeRate: 118.75,
+    foodAllowanceDaily: 0,
+    aadharRef: '',
+    emergencyContact: '',
+    skillTags: ['Marble Specialist', 'Skirting Specialist'],
+    status: 'active',
+    notes: '',
+    createdAt: '',
+    updatedAt: '',
+  };
+  const e2: Employee = {
+    ...e1,
+    id: 'e2',
+    empCode: 'AVY-MSN-002',
+    fullName: 'Imran',
+    skillTags: ['Granite Cutter', 'Epoxy Grouting'],
+  };
+  const e3: Employee = {
+    ...e1,
+    id: 'e3',
+    empCode: 'AVY-HLP-003',
+    fullName: 'Kiran',
+    role: 'Helper',
+    skillTags: [],
+  };
+
+  assert.equal(filterEmployeesBySkillTags([e1, e2, e3], []).length, 3);
+  assert.deepEqual(
+    filterEmployeesBySkillTags([e1, e2, e3], ['Marble Specialist']).map((e) => e.id),
+    ['e1']
+  );
+  assert.deepEqual(
+    filterEmployeesBySkillTags([e1, e2, e3], ['Granite Cutter', 'Marble Specialist'], 'any').map((e) => e.id),
+    ['e1', 'e2']
+  );
+  assert.equal(
+    filterEmployeesBySkillTags([e1, e2, e3], ['Marble Specialist', 'Epoxy Grouting'], 'all').length,
+    0
+  );
+});
+
+test('normalizeHHMM, computeWorkedHoursFromInOut, and formatAttendanceInOutSummary handle In/Out timestamps', () => {
+  assert.equal(normalizeHHMM('9:05'), '09:05');
+  assert.equal(normalizeHHMM('invalid'), '');
+  const hrs = computeWorkedHoursFromInOut('09:00', '20:30');
+  assert.equal(hrs.valid, true);
+  assert.equal(hrs.totalHours, 11.5);
+  assert.equal(hrs.overtimeHoursEstimate, 2.5);
+
+  assert.equal(formatAttendanceInOutSummary({ inTime: '09:05', outTime: '18:30' }), 'In 09:05 · Out 18:30');
+  assert.equal(formatAttendanceInOutSummary({ inTime: '09:05' }), 'In 09:05 · Active');
+  assert.equal(formatAttendanceInOutSummary({}), 'Time not logged');
+});
+
+test('summarizeSupervisorToolSpends aggregates supervisor tool & site expenses by approval status', () => {
+  const expenses: SiteExpense[] = [
+    {
+      id: 'exp_adm',
+      ownerId: 'u1',
+      date: '2026-11-20',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      category: 'material',
+      description: 'Adhesive bulk',
+      amount: 12000,
+      paymentMode: 'bank_transfer',
+      recordedByRole: 'admin',
+      notes: '',
+      createdAt: '2026-11-20T09:00:00Z',
+      updatedAt: '',
+    },
+    {
+      id: 'exp_sup_1',
+      ownerId: 'u1',
+      date: '2026-11-22',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      towerId: 't1',
+      towerName: 'Tower A',
+      category: 'tools_equipment',
+      description: 'Diamond blades',
+      toolItemsSummary: 'Diamond Cutting Blade',
+      billReceiptNumber: 'BILL-881',
+      amount: 1450,
+      paymentMode: 'upi',
+      recordedByRole: 'supervisor',
+      recordedByName: 'Prakash Reddy',
+      reimbursementStatus: 'pending_admin',
+      notes: '',
+      createdAt: '2026-11-22T10:00:00Z',
+      updatedAt: '',
+    },
+    {
+      id: 'exp_sup_2',
+      ownerId: 'u1',
+      date: '2026-11-21',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      towerId: 't1',
+      towerName: 'Tower A',
+      category: 'tools_equipment',
+      description: 'Tile spacers 4mm',
+      amount: 600,
+      paymentMode: 'cash',
+      recordedByRole: 'supervisor',
+      recordedByName: 'Prakash Reddy',
+      reimbursementStatus: 'reimbursed',
+      notes: '',
+      createdAt: '2026-11-21T12:00:00Z',
+      updatedAt: '',
+    },
+  ];
+
+  const sum = summarizeSupervisorToolSpends(expenses);
+  assert.equal(sum.totalCount, 2);
+  assert.equal(sum.totalAmount, 2050);
+  assert.equal(sum.pendingCount, 1);
+  assert.equal(sum.pendingAmount, 1450);
+  assert.equal(sum.reimbursedCount, 1);
+  assert.equal(sum.reimbursedAmount, 600);
+});
+
+
 
 
 

@@ -10,14 +10,22 @@ import type {
   EmployeeDocument,
   FlatUnit,
   Project,
+  RemovedEmployeeBackup,
   SettlementEntry,
   SiteExpense,
+  TeamMessage,
   Tower,
   WorkAssignment,
 } from '../types/avy';
 import { TILE_ZONES, createDefaultZones } from '../utils/tileZones';
 import { DEFAULT_WEEKLY_EXPENSE_BUDGET } from '../utils/operations';
 import { DEFAULT_BILLING_TERMS, computeBillingTotals } from '../utils/billing';
+import {
+  ADMIN_ACTOR_ID,
+  TEAM_BROADCAST_THREAD_ID,
+  buildDirectThreadId,
+  buildTowerThreadId,
+} from '../utils/messenger';
 
 export interface WorkspaceSnapshot {
   companyProfile: CompanyProfile;
@@ -26,6 +34,7 @@ export interface WorkspaceSnapshot {
   flats: FlatUnit[];
   employees: Employee[];
   employeeDocuments: EmployeeDocument[];
+  removedEmployees: RemovedEmployeeBackup[];
   deployments: DeploymentRecord[];
   assignments: WorkAssignment[];
   attendance: AttendanceRecord[];
@@ -35,6 +44,7 @@ export interface WorkspaceSnapshot {
   dailySiteLogs: DailySiteLog[];
   billingDocuments: BillingDocument[];
   companyDocuments: CompanyDocument[];
+  teamMessages: TeamMessage[];
 }
 
 export function getTodayIso(): string {
@@ -227,6 +237,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       currentProjectName: 'Skyline Heights Residency',
       currentTowerId: 'twr_skyline_a',
       currentTowerName: 'Tower A',
+      skillTags: ['Marble Specialist', 'Vitrified Tile Layer', 'Floor Levelling'],
       loginPin: '1234',
       status: 'active',
       notes: 'Lead vitrified & Italian marble flooring specialist.',
@@ -255,6 +266,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       currentProjectName: 'Skyline Heights Residency',
       currentTowerId: 'twr_skyline_b',
       currentTowerName: 'Tower B',
+      skillTags: ['Dado & Waterproofing', 'Skirting Specialist', 'Epoxy Grouting'],
       loginPin: '1234',
       status: 'active',
       notes: 'Kitchen & bath dado + precision skirting alignment.',
@@ -283,6 +295,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       currentProjectName: 'Skyline Heights Residency',
       currentTowerId: 'twr_skyline_a',
       currentTowerName: 'Tower A',
+      skillTags: ['Acid Wash & Cleaning', 'Epoxy Grouting'],
       loginPin: '1234',
       status: 'active',
       notes: 'Adhesive mixing, spacer placement & tile cutting assist.',
@@ -311,6 +324,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       currentProjectName: 'Skyline Heights Residency',
       currentTowerId: 'twr_skyline_a',
       currentTowerName: 'Tower A',
+      skillTags: ['Granite Cutter', 'Balcony & Slope Tiling'],
       loginPin: '1234',
       status: 'active',
       notes: 'Hoist & floor-to-floor tile box, cement & adhesive shifting.',
@@ -497,7 +511,10 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
           assignedEmpCode: 'AVY-MSN-001',
           assignedEmployeeName: 'Raju Mistri',
           updatedDate: today,
-          notes: 'Laser level & surface screed prechecking before tile laying.',
+          notes: 'Laser level & surface screed prechecking before tile laying — check 4mm dip near balcony threshold.',
+          issueStatus: 'open',
+          issueReportedBy: 'Prakash Reddy (Supervisor)',
+          issueReportedAt: nowIso,
         },
         corridor: {
           status: 'in_progress',
@@ -720,6 +737,8 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       towerId: 'twr_skyline_a',
       towerName: 'Tower A',
       status: 'present',
+      inTime: '08:45',
+      outTime: '20:00',
       overtimeHours: 2,
       dailyWageEarned: 1050,
       overtimePayEarned: 320,
@@ -740,6 +759,8 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       towerId: 'twr_skyline_b',
       towerName: 'Tower B',
       status: 'present',
+      inTime: '09:00',
+      outTime: '18:15',
       overtimeHours: 0,
       dailyWageEarned: 980,
       overtimePayEarned: 0,
@@ -780,6 +801,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       towerId: 'twr_skyline_a',
       towerName: 'Tower A',
       status: 'present',
+      inTime: '08:55',
       overtimeHours: 0,
       dailyWageEarned: 1050,
       overtimePayEarned: 0,
@@ -800,6 +822,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       towerId: 'twr_skyline_b',
       towerName: 'Tower B',
       status: 'present',
+      inTime: '09:05',
       overtimeHours: 0,
       dailyWageEarned: 980,
       overtimePayEarned: 0,
@@ -820,6 +843,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       towerId: 'twr_skyline_a',
       towerName: 'Tower A',
       status: 'present',
+      inTime: '09:10',
       overtimeHours: 0,
       dailyWageEarned: 650,
       overtimePayEarned: 0,
@@ -1138,6 +1162,29 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
       createdAt: nowIso,
       updatedAt: nowIso,
     },
+    {
+      id: 'exp_007_sup_tool',
+      ownerId,
+      date: today,
+      projectId: 'proj_skyline_heights',
+      projectName: 'Skyline Heights Residency',
+      towerId: 'twr_skyline_a',
+      towerName: 'Tower A',
+      category: 'tools_equipment',
+      description: 'Urgent 4" Diamond Cutting Blades (3 pcs) & 2mm Tile Spacers bought by Supervisor',
+      toolItemsSummary: 'Diamond Cutting Blade, Tile Spacers & Leveling Wedges',
+      vendorName: 'Surya Hardware & Tools',
+      billReceiptNumber: 'INV-SH-4419',
+      amount: 1450,
+      paymentMode: 'upi',
+      recordedByRole: 'supervisor',
+      recordedByName: 'Prakash Reddy',
+      recordedByEmployeeId: 'emp_avy_sup_005',
+      reimbursementStatus: 'pending_admin',
+      notes: 'Urgent site requirement for Flat 101 hall skirting miter cuts',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
   ];
 
   const employeeDocuments: EmployeeDocument[] = [];
@@ -1393,6 +1440,59 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
     },
   ];
 
+  const teamMessages: TeamMessage[] = [
+    {
+      id: 'tmsg_seed_broadcast_001',
+      ownerId,
+      threadId: TEAM_BROADCAST_THREAD_ID,
+      channelType: 'broadcast',
+      senderId: ADMIN_ACTOR_ID,
+      senderName: companyProfile.signatoryName || 'AVY INFRA Admin',
+      senderRole: 'admin',
+      body: 'Morning team! Quick Scan attendance closes at 09:30 AM. Please submit Sunday Weekly Food runs for Admin approval with WhatsApp alert.',
+      readByIds: [ADMIN_ACTOR_ID],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+    {
+      id: 'tmsg_seed_tower_002',
+      ownerId,
+      threadId: buildTowerThreadId('twr_skyline_a'),
+      channelType: 'tower',
+      projectId: 'proj_skyline_heights',
+      towerId: 'twr_skyline_a',
+      towerName: 'Tower A',
+      senderId: 'emp_avy_sup_005',
+      senderName: 'Prakash Reddy',
+      senderRole: 'supervisor',
+      body: 'Tower A Floor 2 & 3 adhesive bags unloaded near service lift. Finish dado leveling before 4 PM.',
+      readByIds: ['emp_avy_sup_005', ADMIN_ACTOR_ID],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+    {
+      id: 'tmsg_seed_dm_003',
+      ownerId,
+      threadId: buildDirectThreadId(ADMIN_ACTOR_ID, 'emp_avy_sup_005'),
+      channelType: 'direct',
+      projectId: 'proj_skyline_heights',
+      towerId: 'twr_skyline_a',
+      towerName: 'Tower A',
+      senderId: 'emp_avy_sup_005',
+      senderName: 'Prakash Reddy',
+      senderRole: 'supervisor',
+      recipientId: ADMIN_ACTOR_ID,
+      recipientName: companyProfile.signatoryName || 'AVY INFRA Admin',
+      recipientRole: 'admin',
+      body: 'Sir, Tower A food count for this week is ready for verification.',
+      readByIds: ['emp_avy_sup_005'],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+  ];
+
+  const removedEmployees: RemovedEmployeeBackup[] = [];
+
   return {
     companyProfile,
     projects,
@@ -1400,6 +1500,7 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
     flats,
     employees,
     employeeDocuments,
+    removedEmployees,
     deployments,
     assignments,
     attendance,
@@ -1409,5 +1510,6 @@ export function createSeedWorkspace(ownerId = 'local-avy-infra'): WorkspaceSnaps
     dailySiteLogs,
     billingDocuments,
     companyDocuments,
+    teamMessages,
   };
 }

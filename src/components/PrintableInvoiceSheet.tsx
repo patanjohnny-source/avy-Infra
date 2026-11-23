@@ -12,6 +12,21 @@ interface PrintableInvoiceSheetProps {
   companyProfile: CompanyProfile;
 }
 
+function resolveTailwindOpacityClass(opacity: number): string {
+  if (opacity <= 0.08) return 'opacity-5';
+  if (opacity <= 0.13) return 'opacity-10';
+  if (opacity <= 0.18) return 'opacity-15';
+  if (opacity <= 0.24) return 'opacity-20';
+  if (opacity <= 0.29) return 'opacity-25';
+  if (opacity <= 0.35) return 'opacity-30';
+  if (opacity <= 0.45) return 'opacity-40';
+  if (opacity <= 0.55) return 'opacity-50';
+  if (opacity <= 0.65) return 'opacity-60';
+  if (opacity <= 0.75) return 'opacity-75';
+  if (opacity <= 0.88) return 'opacity-85';
+  return 'opacity-100';
+}
+
 export function PrintableInvoiceSheet({
   document: doc,
   companyProfile,
@@ -20,10 +35,23 @@ export function PrintableInvoiceSheet({
   const balance =
     doc.status === 'paid' ? 0 : Math.max(0, (doc.grandTotal || 0) - (doc.amountPaid || 0));
 
+  const effectiveLetterheadBg = doc.useCustomLetterhead
+    ? doc.letterheadBgDataUrl || companyProfile.quotationLetterheadBgDataUrl || ''
+    : '';
+  const effectiveOpacity =
+    typeof doc.letterheadBgOpacity === 'number' && Number.isFinite(doc.letterheadBgOpacity)
+      ? Math.max(0.05, Math.min(1, doc.letterheadBgOpacity))
+      : typeof companyProfile.quotationLetterheadOpacity === 'number' &&
+          Number.isFinite(companyProfile.quotationLetterheadOpacity)
+        ? Math.max(0.05, Math.min(1, companyProfile.quotationLetterheadOpacity))
+        : 0.14;
+  const hideTopBanner = Boolean(doc.useCustomLetterhead && doc.hideDefaultHeader && effectiveLetterheadBg);
+
   return (
     <div
       data-testid="printable-invoice-sheet"
-      className="invoice-a4-page bg-white text-slate-900 border border-slate-300 shadow-sm mx-auto flex flex-col justify-between"
+      data-custom-letterhead={effectiveLetterheadBg ? 'active' : 'none'}
+      className="invoice-a4-page relative overflow-hidden bg-white text-slate-900 border border-slate-300 shadow-sm mx-auto flex flex-col justify-between"
       style={{
         width: '194mm',
         minHeight: '277mm',
@@ -31,45 +59,67 @@ export function PrintableInvoiceSheet({
         boxSizing: 'border-box',
       }}
     >
-      <div className="space-y-4">
-        {/* Supplier & Document Header Band */}
-        <header className="flex items-start justify-between gap-4 pb-4 border-b-2 border-slate-900">
-          <div className="flex items-start gap-3 min-w-0">
-            {companyProfile.logoDataUrl ? (
-              <img
-                src={companyProfile.logoDataUrl}
-                alt={companyProfile.companyName}
-                className="w-12 h-12 rounded border border-slate-200 object-contain p-0.5 bg-white shrink-0"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded bg-slate-900 text-orange-400 font-display font-bold text-sm flex items-center justify-center shrink-0">
-                {companyProfile.companyName.slice(0, 3).toUpperCase()}
-              </div>
-            )}
+      {effectiveLetterheadBg && (
+        <img
+          src={effectiveLetterheadBg}
+          alt=""
+          aria-hidden="true"
+          data-testid="invoice-custom-letterhead-bg"
+          className={`pointer-events-none select-none absolute inset-0 w-full h-full object-cover z-0 ${resolveTailwindOpacityClass(
+            effectiveOpacity
+          )}`}
+        />
+      )}
 
-            <div className="min-w-0 space-y-0.5">
-              <div className="font-display font-bold text-lg text-slate-900 leading-tight">
-                {companyProfile.companyName}
-              </div>
-              {companyProfile.tagline && (
-                <div className="text-[11px] font-medium text-orange-700">
-                  {companyProfile.tagline}
-                </div>
-              )}
-              <div className="text-[10.5px] text-slate-600 max-w-[330px] leading-snug">
-                {companyProfile.address}
-              </div>
-              <div className="text-[10.5px] font-mono text-slate-700 pt-0.5">
-                Ph: {companyProfile.hrContact}
-                {companyProfile.hrEmail ? ` · ${companyProfile.hrEmail}` : ''}
-              </div>
-              {companyProfile.gstNumber && (
-                <div className="text-[10.5px] font-mono font-semibold text-slate-900">
-                  Supplier GSTIN: {companyProfile.gstNumber}
-                </div>
-              )}
+      <div className="relative z-10 space-y-4">
+        {/* Supplier & Document Header Band */}
+        <header
+          className={`flex items-start justify-between gap-4 pb-4 ${
+            hideTopBanner ? 'pt-14 border-b border-slate-300' : 'border-b-2 border-slate-900'
+          }`}
+        >
+          {hideTopBanner ? (
+            <div className="text-[11px] font-mono text-slate-500">
+              {companyProfile.gstNumber ? `GSTIN: ${companyProfile.gstNumber}` : ''}
             </div>
-          </div>
+          ) : (
+            <div className="flex items-start gap-3 min-w-0">
+              {companyProfile.logoDataUrl ? (
+                <img
+                  src={companyProfile.logoDataUrl}
+                  alt={companyProfile.companyName}
+                  className="w-12 h-12 rounded border border-slate-200 object-contain p-0.5 bg-white shrink-0"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded bg-slate-900 text-orange-400 font-display font-bold text-sm flex items-center justify-center shrink-0">
+                  {companyProfile.companyName.slice(0, 3).toUpperCase()}
+                </div>
+              )}
+
+              <div className="min-w-0 space-y-0.5">
+                <div className="font-display font-bold text-lg text-slate-900 leading-tight">
+                  {companyProfile.companyName}
+                </div>
+                {companyProfile.tagline && (
+                  <div className="text-[11px] font-medium text-orange-700">
+                    {companyProfile.tagline}
+                  </div>
+                )}
+                <div className="text-[10.5px] text-slate-600 max-w-[330px] leading-snug">
+                  {companyProfile.address}
+                </div>
+                <div className="text-[10.5px] font-mono text-slate-700 pt-0.5">
+                  Ph: {companyProfile.hrContact}
+                  {companyProfile.hrEmail ? ` · ${companyProfile.hrEmail}` : ''}
+                </div>
+                {companyProfile.gstNumber && (
+                  <div className="text-[10.5px] font-mono font-semibold text-slate-900">
+                    Supplier GSTIN: {companyProfile.gstNumber}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="text-right shrink-0 space-y-1">
             <div

@@ -3,6 +3,7 @@ import {
   Camera,
   CheckCircle2,
   ClipboardList,
+  Download,
   Eye,
   Mic,
   MicOff,
@@ -34,7 +35,11 @@ import {
   type ProofLightboxPayload,
 } from './ImageProofLightboxModal';
 
-export function DailySiteLogView() {
+interface DailySiteLogViewProps {
+  onOpenProjectLogsReport?: (projectId?: string) => void;
+}
+
+export function DailySiteLogView({ onOpenProjectLogsReport }: DailySiteLogViewProps) {
   const {
     session,
     projects: allProjects,
@@ -268,8 +273,21 @@ export function DailySiteLogView() {
             Capture daily tower-level observations, material deliveries, safety briefings, and site photos beyond flat-level status updates.
           </p>
         </div>
-        <div className="text-xs font-mono text-slate-600 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md">
-          {scopedLogs.length} {scopedLogs.length === 1 ? 'Entry' : 'Entries'} Visible
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="text-xs font-mono text-slate-600 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-md">
+            {scopedLogs.length} {scopedLogs.length === 1 ? 'Entry' : 'Entries'} Visible
+          </div>
+          {onOpenProjectLogsReport && (
+            <button
+              type="button"
+              data-testid="sitelogs-open-report-modal-btn"
+              onClick={() => onOpenProjectLogsReport(resolvedProjectId || undefined)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Project Logs Report (CSV / PDF)</span>
+            </button>
+          )}
         </div>
       </div>
 

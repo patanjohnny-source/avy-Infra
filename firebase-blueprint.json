@@ -31,6 +31,8 @@
         "idCardAccentColor": { "type": "string", "minLength": 0, "maxLength": 24 },
         "idCardTextColor": { "type": "string", "minLength": 0, "maxLength": 24 },
         "idCardBgOpacity": { "type": "number" },
+        "quotationLetterheadBgDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "quotationLetterheadOpacity": { "type": "number" },
         "tileZoneCatalog": { "type": "array", "description": "Customizable room and tile area definitions." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -45,6 +47,7 @@
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 120 },
         "location": { "type": "string", "minLength": 0, "maxLength": 160 },
+        "placeId": { "type": "string", "minLength": 0, "maxLength": 160 },
         "clientName": { "type": "string", "minLength": 0, "maxLength": 120 },
         "status": { "type": "string", "enum": ["active", "completed", "on_hold"] },
         "startDate": { "type": "string", "minLength": 0, "maxLength": 24 },
@@ -128,6 +131,7 @@
         "currentTowerId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "currentTowerName": { "type": "string", "minLength": 0, "maxLength": 80 },
         "assignedTowerIds": { "type": "array", "description": "Assigned tower IDs for supervisor login scope." },
+        "skillTags": { "type": "array", "description": "Proficiency skill tags for work assignment filtering." },
         "loginPin": { "type": "string", "minLength": 0, "maxLength": 24 },
         "qrToken": { "type": "string", "minLength": 0, "maxLength": 48 },
         "status": { "type": "string", "enum": ["active", "inactive"] },
@@ -222,6 +226,8 @@
         "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
         "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
         "status": { "type": "string", "enum": ["present", "half_day", "absent"] },
+        "inTime": { "type": "string", "minLength": 0, "maxLength": 12 },
+        "outTime": { "type": "string", "minLength": 0, "maxLength": 12 },
         "overtimeHours": { "type": "number" },
         "dailyWageEarned": { "type": "number" },
         "overtimePayEarned": { "type": "number" },
@@ -267,6 +273,13 @@
         "acknowledgedBy": { "type": "string", "minLength": 0, "maxLength": 100 },
         "followUpSentAt": { "type": "string", "minLength": 0, "maxLength": 40 },
         "followUpCount": { "type": "number" },
+        "approvalStatus": { "type": "string", "enum": ["pending_admin", "approved", "rejected"] },
+        "approvalBatchId": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "submittedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "submittedByRole": { "type": "string", "enum": ["admin", "supervisor"] },
+        "approvedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "approvedAt": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "approvalNote": { "type": "string", "minLength": 0, "maxLength": 300 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -294,6 +307,12 @@
         "upiId": { "type": "string", "minLength": 0, "maxLength": 120 },
         "proofImageDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
         "notes": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "recordedByRole": { "type": "string", "enum": ["admin", "supervisor"] },
+        "recordedByName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "recordedByEmployeeId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "toolItemsSummary": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "billReceiptNumber": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "reimbursementStatus": { "type": "string", "enum": ["pending_admin", "approved", "reimbursed"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -407,6 +426,10 @@
         "notes": { "type": "string", "minLength": 0, "maxLength": 500 },
         "terms": { "type": "string", "minLength": 0, "maxLength": 800 },
         "whatsappShared": { "type": "boolean" },
+        "useCustomLetterhead": { "type": "boolean" },
+        "hideDefaultHeader": { "type": "boolean" },
+        "letterheadBgDataUrl": { "type": "string", "minLength": 0, "maxLength": 240000 },
+        "letterheadBgOpacity": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -443,6 +466,56 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerId", "source", "docCategory", "fileFormat", "title", "fileName", "mimeType", "sizeBytes", "approvalStatus", "issueDate", "createdAt", "updatedAt"]
+    },
+    "TeamMessage": {
+      "title": "TeamMessage",
+      "description": "Broadcast, tower-channel, and direct messages exchanged between Admin, Site Supervisors, and Employees.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "threadId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "channelType": { "type": "string", "enum": ["broadcast", "tower", "direct"] },
+        "projectId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "towerName": { "type": "string", "minLength": 0, "maxLength": 80 },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "senderRole": { "type": "string", "enum": ["admin", "supervisor", "employee"] },
+        "recipientId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "recipientName": { "type": "string", "minLength": 0, "maxLength": 100 },
+        "recipientRole": { "type": "string", "enum": ["admin", "supervisor", "employee"] },
+        "body": { "type": "string", "minLength": 1, "maxLength": 1200 },
+        "attachmentName": { "type": "string", "minLength": 0, "maxLength": 180 },
+        "attachmentMimeType": { "type": "string", "minLength": 0, "maxLength": 120 },
+        "attachmentDataUrl": { "type": "string", "minLength": 0, "maxLength": 340000 },
+        "readByIds": { "type": "array", "description": "Actor IDs that have read this message." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "threadId", "channelType", "senderId", "senderName", "senderRole", "body", "readByIds", "createdAt", "updatedAt"]
+    },
+    "EmployeeBackup": {
+      "title": "EmployeeBackup",
+      "description": "Archived snapshot of a removed employee (full profile, statutory IDs, skill tags, uploaded documents, and payroll/attendance summary) for recovery and audit.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "empCode": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["Mason", "Helper", "Material Shifting", "Supervisor", "Engineer"] },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "joiningDate": { "type": "string", "minLength": 8, "maxLength": 24 },
+        "removedAt": { "type": "string", "minLength": 8, "maxLength": 40 },
+        "removedByName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "removalReason": { "type": "string", "minLength": 0, "maxLength": 300 },
+        "employeeSnapshot": { "type": "object", "description": "Complete Employee snapshot at removal time." },
+        "documents": { "type": "array", "description": "Up to 5 archived employee documents (Aadhaar PDF, etc.)." },
+        "summary": { "type": "object", "description": "Attendance, advances, settlements, and assignment summary metrics." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "employeeId", "empCode", "fullName", "role", "phone", "joiningDate", "removedAt", "removedByName", "employeeSnapshot", "documents", "summary", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -469,6 +542,10 @@
     "/employee_docs/{docId}": {
       "schema": { "$ref": "#/entities/EmployeeDocument" },
       "description": "Uploaded Aadhar PDF and supporting documents per employee."
+    },
+    "/employee_backups/{backupId}": {
+      "schema": { "$ref": "#/entities/EmployeeBackup" },
+      "description": "Automatic archived backups created whenever an employee is removed from Workforce & IDs."
     },
     "/deployments/{deploymentId}": {
       "schema": { "$ref": "#/entities/DeploymentRecord" },
@@ -509,6 +586,10 @@
     "/company_documents/{docId}": {
       "schema": { "$ref": "#/entities/CompanyDocument" },
       "description": "Documents Drive storing generated Smart Employee Letters, Word letterheads, PowerPoint decks, and uploaded Office/PDF files."
+    },
+    "/team_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/TeamMessage" },
+      "description": "In-app team messenger threads for Admin, Supervisors, and Employees."
     }
   }
 }

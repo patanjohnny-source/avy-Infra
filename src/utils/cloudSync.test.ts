@@ -114,3 +114,53 @@ test('buildNamespacedCloudSeedPayload filters orphan child records whose parent 
   assert.ok(payload.attendance.every((a) => empIds.has(String(a.data.employeeId))));
   assert.ok(payload.advances.every((a) => empIds.has(String(a.data.employeeId))));
 });
+
+test('buildNamespacedCloudSeedPayload namespaces removedEmployees backups cleanly', () => {
+  const uid = 'ownerCloudUid999';
+  const seed = createSeedWorkspace('local-avy-infra');
+  const sampleEmp = seed.employees[0];
+  seed.removedEmployees = [
+    {
+      id: 'bak_001',
+      ownerId: 'local-avy-infra',
+      employeeId: sampleEmp.id,
+      empCode: sampleEmp.empCode,
+      fullName: sampleEmp.fullName,
+      role: sampleEmp.role,
+      phone: sampleEmp.phone,
+      joiningDate: sampleEmp.joiningDate,
+      removedAt: '2026-11-23T10:00:00.000Z',
+      removedByName: 'Admin',
+      removalReason: 'Site completed',
+      employeeSnapshot: sampleEmp,
+      documents: [],
+      summary: {
+        attendanceCount: 2,
+        presentDays: 2,
+        halfDays: 0,
+        absentDays: 0,
+        totalWagesEarned: 2100,
+        totalAdvances: 150,
+        totalSettled: 0,
+        netPayable: 1950,
+        deploymentsCount: 1,
+        assignmentsCount: 1,
+        documentsCount: 0,
+      },
+      createdAt: '2026-11-23T10:00:00.000Z',
+      updatedAt: '2026-11-23T10:00:00.000Z',
+    },
+  ];
+
+  const payload = buildNamespacedCloudSeedPayload(uid, seed, {
+    adminUsername: 'admin',
+    adminPassword: 'admin123',
+    adminEditPin: '1234',
+    userPin: '1234',
+  });
+
+  assert.equal(payload.removedEmployees.length, 1);
+  assert.equal(payload.removedEmployees[0].data.ownerId, uid);
+  assert.equal(payload.removedEmployees[0].data.employeeId, namespaceDocId(uid, sampleEmp.id));
+  assert.equal(payload.removedEmployees[0].data.removalReason, 'Site completed');
+});

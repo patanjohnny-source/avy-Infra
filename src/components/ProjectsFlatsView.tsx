@@ -1,20 +1,28 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Building2,
   CalendarClock,
   CheckCircle2,
+  Flag,
   Layers,
+  MapPin,
   MessageSquare,
+  Mic,
   Pencil,
   Phone,
   Plus,
   Printer,
+  QrCode,
   RotateCcw,
+  ScrollText,
   Search,
   SlidersHorizontal,
+  Square,
   Trash2,
   UserPlus,
   Users,
+  Volume2,
   X,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
@@ -58,14 +66,18 @@ import {
   type WholeFloorCommonRoomSpec,
   type WholeFloorCustomZoneItem,
   SPECIAL_FLOOR_PRESETS,
+  FLOOR_LAYOUT_PRESETS,
+  RESIDENTIAL_BHK_TYPES,
   TILE_ZONES,
   WHOLE_FLOOR_COMMON_ROOM_TEMPLATES,
   WHOLE_FLOOR_CUSTOM_PRESETS,
   ZONE_CATEGORIES,
   ZONE_STATUS_LABELS,
   buildMixedBhkFloorUnits,
+  buildOrderedSlotFloorUnits,
   buildWholeFloorCommonZoneItems,
   calculateFlatProgress,
+  collectOpenZoneIssuesForFlats,
   formatFloorLabel,
   formatFloorShortTag,
   generateUnitNumbersForFloor,
@@ -79,16 +91,31 @@ import {
 } from '../utils/tileZones';
 import { PrintPreviewOverlay } from './PrintPreviewOverlay';
 import { PrintableWorkReportSheet } from './PrintableWorkReportSheet';
+import { ProjectLocationAutocomplete } from './ProjectLocationAutocomplete';
+import { ProjectSitesCompletionMap } from './ProjectSitesCompletionMap';
+import { ProjectSitesMapModal } from './ProjectSitesMapModal';
+import { CustomQrStudioModal } from './CustomQrStudioModal';
 
 interface ProjectsFlatsViewProps {
+  preselectedTarget?: {
+    projectId?: string;
+    towerId?: string;
+    flatId?: string;
+    nonce: number;
+  };
   onOpenAssignWork: (flatId?: string, zoneKey?: TileZoneKey) => void;
+  onOpenProjectLogsReport?: (projectId?: string) => void;
+  onPreviewQrProfile?: (scanUrl: string) => void;
   onTriggerWhatsapp: (payload: WhatsappMessagePayload) => void;
 }
 
 type SpecialLevelId = 'basement_3' | 'basement_2' | 'basement_1' | 'ground' | 'podium';
 
 export function ProjectsFlatsView({
+  preselectedTarget,
   onOpenAssignWork,
+  onOpenProjectLogsReport,
+  onPreviewQrProfile,
   onTriggerWhatsapp,
 }: ProjectsFlatsViewProps) {
   const {
@@ -110,6 +137,7 @@ export function ProjectsFlatsView({
     removeTower,
     removeFlat,
     updateFlatZone,
+    rectifyFlatZoneIssue,
     completeAssignment,
     updateTileZoneCatalog,
     addCustomZoneToFlat,
@@ -165,6 +193,8 @@ export function ProjectsFlatsView({
   const [workAreaFilter, setWorkAreaFilter] = useState<WorkAreaFilter>('all');
   const [workAreaSearch, setWorkAreaSearch] = useState<string>('');
   const [showWorkReportPreview, setShowWorkReportPreview] = useState(false);
+  const [showSiteMapModal, setShowSiteMapModal] = useState(false);
+  const [showQrStudioModal, setShowQrStudioModal] = useState(false);
 
   // Per-flat custom room/area controls
   const [showAddFlatZone, setShowAddFlatZone] = useState(false);
@@ -175,10 +205,31 @@ export function ProjectsFlatsView({
   const [editingZoneLabel, setEditingZoneLabel] = useState('');
   const [editingZoneCat, setEditingZoneCat] = useState<TileZoneCategory>('Flooring');
 
+  // Tile-laying area Note & Remarks + Voice Note Modal state
+  const [remarkModalZone, setRemarkModalZone] = useState<{
+    flatId: string;
+    zoneKey: string;
+    zoneLabel: string;
+  } | null>(null);
+  const [draftZoneNotes, setDraftZoneNotes] = useState('');
+  const [draftVoiceTranscript, setDraftVoiceTranscript] = useState('');
+  const [draftVoiceDataUrl, setDraftVoiceDataUrl] = useState('');
+  const [draftFlagOpenIssue, setDraftFlagOpenIssue] = useState(true);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [voiceRecordError, setVoiceRecordError] = useState('');
+  const [savingZoneRemark, setSavingZoneRemark] = useState(false);
+  const [rectifyingKey, setRectifyingKey] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const speechRecRef = useRef<{ stop?: () => void } | null>(null);
+  const voiceStopTimerRef = useRef<number | null>(null);
+
   // Modals for Project (New & Edit)
   const [showNewProject, setShowNewProject] = useState(false);
   const [projName, setProjName] = useState('');
   const [projLocation, setProjLocation] = useState('');
+  const [projPlaceId, setProjPlaceId] = useState('');
   const [projClient, setProjClient] = useState('');
   const [projStartDate, setProjStartDate] = useState(getTodayIso());
   const [projFinishDate, setProjFinishDate] = useState('');
@@ -197,11 +248,22 @@ export function ProjectsFlatsView({
   const [endFloor, setEndFloor] = useState('3');
   const [unitsPerFloor, setUnitsPerFloor] = useState('3');
   const [unitTypeDefault, setUnitTypeDefault] = useState('3 BHK');
-  const [twrPlanMode, setTwrPlanMode] = useState<'uniform' | 'mixed'>('uniform');
+  const [twrPlanMode, setTwrPlanMode] = useState<'uniform' | 'mixed' | 'ordered_slots'>('uniform');
+  const [twrOrderedSlots, setTwrOrderedSlots] = useState<string[]>([
+    '3 BHK',
+    '3 BHK',
+    '2 BHK',
+    '2 BHK',
+    '2 BHK',
+    '2 BHK',
+    '3 BHK',
+    '3 BHK',
+  ]);
   const [twrMixedCounts, setTwrMixedCounts] = useState<Record<string, string>>({
     '3 BHK': '3',
     '2 BHK': '3',
     '4 BHK': '0',
+    '5 BHK': '0',
     '1 BHK': '0',
     Penthouse: '0',
   });
@@ -237,16 +299,29 @@ export function ProjectsFlatsView({
   const [deploySelectedEmpIds, setDeploySelectedEmpIds] = useState<string[]>([]);
   const [deploySubmitting, setDeploySubmitting] = useState(false);
 
+  const [showInlineSiteMap, setShowInlineSiteMap] = useState(true);
   const [showAddFloor, setShowAddFloor] = useState(false);
   const [floorPreset, setFloorPreset] = useState<'typical' | SpecialLevelId>('typical');
-  const [floorMode, setFloorMode] = useState<'auto' | 'mixed' | 'custom'>('auto');
+  const [floorMode, setFloorMode] = useState<'auto' | 'mixed' | 'ordered_slots' | 'custom'>('auto');
   const [customFloorNum, setCustomFloorNum] = useState('2');
+  const [customEndFloorNum, setCustomEndFloorNum] = useState('');
   const [customFloorLabelInput, setCustomFloorLabelInput] = useState('');
   const [customUnitsCount, setCustomUnitsCount] = useState('3');
+  const [flOrderedSlots, setFlOrderedSlots] = useState<string[]>([
+    '3 BHK',
+    '3 BHK',
+    '2 BHK',
+    '2 BHK',
+    '2 BHK',
+    '2 BHK',
+    '3 BHK',
+    '3 BHK',
+  ]);
   const [flMixedCounts, setFlMixedCounts] = useState<Record<string, string>>({
     '3 BHK': '3',
     '2 BHK': '3',
     '4 BHK': '0',
+    '5 BHK': '0',
     '1 BHK': '0',
     Penthouse: '0',
   });
@@ -314,6 +389,21 @@ export function ProjectsFlatsView({
       setSelectedProjectId(projects[0].id);
     }
   }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!preselectedTarget) return;
+    if (preselectedTarget.projectId && projects.some((p) => p.id === preselectedTarget.projectId)) {
+      setSelectedProjectId(preselectedTarget.projectId);
+    }
+    if (preselectedTarget.towerId && towers.some((t) => t.id === preselectedTarget.towerId)) {
+      setSelectedTowerId(preselectedTarget.towerId);
+    }
+    setSelectedFloorFilter('all');
+    setUnitSearch('');
+    if (preselectedTarget.flatId && flats.some((f) => f.id === preselectedTarget.flatId)) {
+      setSelectedFlatId(preselectedTarget.flatId);
+    }
+  }, [preselectedTarget, projects, towers, flats]);
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId) || null;
 
@@ -514,6 +604,7 @@ export function ProjectsFlatsView({
   const handleOpenNewProject = () => {
     setProjName('');
     setProjLocation('');
+    setProjPlaceId('');
     setProjClient('');
     setProjStartDate(getTodayIso());
     setProjFinishDate('');
@@ -528,6 +619,7 @@ export function ProjectsFlatsView({
     setEditingProject(proj);
     setProjName(proj.name);
     setProjLocation(proj.location);
+    setProjPlaceId(proj.placeId || '');
     setProjClient(proj.clientName);
     setEditProjStatus(proj.status);
     setProjStartDate(proj.startDate || '');
@@ -544,6 +636,7 @@ export function ProjectsFlatsView({
     const p = await addProject({
       name: projName.trim(),
       location: projLocation.trim(),
+      placeId: projPlaceId.trim() || undefined,
       clientName: projClient.trim(),
       startDate: projStartDate,
       finishDate: projFinishDate,
@@ -562,6 +655,7 @@ export function ProjectsFlatsView({
     await updateProject(editingProject.id, {
       name: projName.trim(),
       location: projLocation.trim(),
+      placeId: projPlaceId.trim() || undefined,
       clientName: projClient.trim(),
       status: editProjStatus,
       startDate: projStartDate,
@@ -581,7 +675,7 @@ export function ProjectsFlatsView({
   };
 
   const getMixedSpecs = (countsMap: Record<string, string>): MixedBhkSpec[] => {
-    const order = ['3 BHK', '2 BHK', '4 BHK', '1 BHK', 'Penthouse'];
+    const order = ['3 BHK', '2 BHK', '4 BHK', '5 BHK', '1 BHK', 'Penthouse'];
     return order
       .map((unitType) => ({
         unitType,
@@ -643,6 +737,12 @@ export function ProjectsFlatsView({
       setTowerError('Enter at least 1 unit count in the Mixed BHK configuration.');
       return;
     }
+    const orderedSlotTypes =
+      twrPlanMode === 'ordered_slots' ? twrOrderedSlots : undefined;
+    if (twrPlanMode === 'ordered_slots' && (!orderedSlotTypes || orderedSlotTypes.length === 0)) {
+      setTowerError('Add at least 1 flat slot in Ordered Slot Layout.');
+      return;
+    }
     const commonAreaItems = twrIncludeCommon
       ? buildQuickFloorCommonSeedItems(
           twrCommonElecCount,
@@ -657,9 +757,13 @@ export function ProjectsFlatsView({
         name: towerName.trim(),
         startFloor: Number(startFloor) || 1,
         endFloor: Number(endFloor) || 1,
-        unitsPerFloor: Number(unitsPerFloor) || 3,
+        unitsPerFloor:
+          twrPlanMode === 'ordered_slots'
+            ? twrOrderedSlots.length
+            : Number(unitsPerFloor) || 3,
         unitType: unitTypeDefault.trim() || '3 BHK',
         mixedSpecsPerFloor,
+        orderedSlotTypes,
         commonAreaItems,
         specialLevels: selectedSpecialLevels,
         specialUnitsPerLevel: Number(specialUnitsPerLevel) || 2,
@@ -825,6 +929,15 @@ export function ProjectsFlatsView({
       return;
     }
 
+    const parsedEndFloor = customEndFloorNum.trim() ? Number(customEndFloorNum) : undefined;
+    if (
+      parsedEndFloor !== undefined &&
+      (!Number.isFinite(parsedEndFloor) || parsedEndFloor < parsedFloor || parsedEndFloor > 150)
+    ) {
+      setFloorError('End Floor must be between Start Floor and 150.');
+      return;
+    }
+
     const customNumbers =
       floorMode === 'custom' ? parseCustomUnitNumbers(customUnitListText) : undefined;
     if (floorMode === 'custom' && (!customNumbers || customNumbers.length === 0)) {
@@ -834,6 +947,12 @@ export function ProjectsFlatsView({
     const mixedSpecs = floorMode === 'mixed' ? getMixedSpecs(flMixedCounts) : undefined;
     if (floorMode === 'mixed' && (!mixedSpecs || mixedSpecs.length === 0)) {
       setFloorError('Enter at least 1 unit count in Mixed BHK configuration.');
+      return;
+    }
+    const orderedSlotTypes =
+      floorMode === 'ordered_slots' ? flOrderedSlots : undefined;
+    if (floorMode === 'ordered_slots' && (!orderedSlotTypes || orderedSlotTypes.length === 0)) {
+      setFloorError('Add at least 1 flat slot in Ordered Slot Layout.');
       return;
     }
 
@@ -851,11 +970,16 @@ export function ProjectsFlatsView({
         projectId: selectedProjectId,
         towerId: selectedTowerId,
         floorNumber: parsedFloor,
+        endFloorNumber: floorMode !== 'custom' ? parsedEndFloor : undefined,
         floorLabel: customFloorLabelInput.trim() || formatFloorLabel(parsedFloor),
-        unitsCount: Number(customUnitsCount) || 3,
+        unitsCount:
+          floorMode === 'ordered_slots'
+            ? flOrderedSlots.length
+            : Number(customUnitsCount) || 3,
         unitType: customUnitType.trim() || '3 BHK',
         customUnitNumbers: customNumbers,
         mixedSpecs,
+        orderedSlotTypes,
         commonAreaItems,
       });
       setSelectedFloorFilter('all');
@@ -864,6 +988,7 @@ export function ProjectsFlatsView({
         setSelectedFlatId(created[0].id);
       }
       setCustomUnitListText('');
+      setCustomEndFloorNum('');
       setShowAddFloor(false);
     } catch (err) {
       setFloorError(err instanceof Error ? err.message : 'Failed to add floor & flats.');
@@ -1122,6 +1247,13 @@ export function ProjectsFlatsView({
           mixedSpecs: getMixedSpecs(flMixedCounts),
         })
       : [];
+  const previewFloorOrderedSpecs =
+    floorMode === 'ordered_slots'
+      ? buildOrderedSlotFloorUnits({
+          floorNumber: Number.isFinite(parsedCustomFloor) ? parsedCustomFloor : 1,
+          slotUnitTypes: flOrderedSlots,
+        })
+      : [];
   const previewFloorUnits =
     floorMode === 'auto'
       ? generateUnitNumbersForFloor(
@@ -1130,7 +1262,199 @@ export function ProjectsFlatsView({
         )
       : floorMode === 'mixed'
         ? previewFloorMixedSpecs.map((u) => `${u.unitNumber} (${u.unitType})`)
-        : parseCustomUnitNumbers(customUnitListText);
+        : floorMode === 'ordered_slots'
+          ? previewFloorOrderedSpecs.map((u) => `${u.unitNumber} (${u.unitType})`)
+          : parseCustomUnitNumbers(customUnitListText);
+
+  const openZoneIssues = useMemo(
+    () =>
+      collectOpenZoneIssuesForFlats({
+        flats,
+        projects,
+        towers,
+        tileZoneCatalog: zoneCatalog,
+      }),
+    [flats, projects, towers, zoneCatalog]
+  );
+
+  const stopVoiceRecording = () => {
+    if (voiceStopTimerRef.current !== null) {
+      window.clearTimeout(voiceStopTimerRef.current);
+      voiceStopTimerRef.current = null;
+    }
+    try {
+      speechRecRef.current?.stop?.();
+    } catch {
+      // Ignore
+    }
+    speechRecRef.current = null;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // Ignore
+      }
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    setIsRecordingVoice(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      stopVoiceRecording();
+    };
+  }, []);
+
+  const startVoiceRecording = async () => {
+    setVoiceRecordError('');
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      setVoiceRecordError(
+        'Microphone recording is not available in this browser. Type or paste the voice note transcript below.'
+      );
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          audioChunksRef.current.push(ev.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || 'audio/webm',
+        });
+        stream.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+        if (blob.size > 0) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = typeof reader.result === 'string' ? reader.result : '';
+            if (res.length > 65000) {
+              setVoiceRecordError(
+                'Voice recording exceeded 65 KB limit. Keep voice clips under 6 seconds or add a text transcript.'
+              );
+            } else if (res.startsWith('data:audio/')) {
+              setDraftVoiceDataUrl(res);
+            }
+          };
+          reader.readAsDataURL(blob);
+        }
+        setIsRecordingVoice(false);
+      };
+
+      // Optional live SpeechRecognition dictation if supported
+      try {
+        const win = window as unknown as {
+          SpeechRecognition?: new () => {
+            continuous: boolean;
+            interimResults: boolean;
+            lang: string;
+            onresult: ((ev: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+            start: () => void;
+            stop: () => void;
+          };
+          webkitSpeechRecognition?: new () => {
+            continuous: boolean;
+            interimResults: boolean;
+            lang: string;
+            onresult: ((ev: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+            start: () => void;
+            stop: () => void;
+          };
+        };
+        const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+        if (SpeechRec) {
+          const rec = new SpeechRec();
+          rec.continuous = true;
+          rec.interimResults = false;
+          rec.lang = 'en-IN';
+          rec.onresult = (ev) => {
+            const parts: string[] = [];
+            for (let i = 0; i < ev.results.length; i += 1) {
+              const t = ev.results[i]?.[0]?.transcript;
+              if (t) parts.push(t.trim());
+            }
+            if (parts.length > 0) {
+              setDraftVoiceTranscript(parts.join(' ').slice(0, 400));
+            }
+          };
+          rec.start();
+          speechRecRef.current = rec;
+        }
+      } catch {
+        // Ignore SpeechRecognition errors silently
+      }
+
+      recorder.start();
+      setIsRecordingVoice(true);
+      voiceStopTimerRef.current = window.setTimeout(() => {
+        stopVoiceRecording();
+      }, 6500);
+    } catch (err) {
+      setVoiceRecordError(
+        err instanceof Error
+          ? `Mic access blocked (${err.message}). You can type the voice note transcript below.`
+          : 'Microphone unavailable. Type the voice note transcript below.'
+      );
+    }
+  };
+
+  const openZoneRemarkModal = (flatId: string, zoneKey: string, zoneLabel: string) => {
+    const targetFlat = flats.find((f) => f.id === flatId);
+    const zState = targetFlat?.zones?.[zoneKey];
+    stopVoiceRecording();
+    setRemarkModalZone({ flatId, zoneKey, zoneLabel });
+    setDraftZoneNotes(zState?.notes || '');
+    setDraftVoiceTranscript(zState?.voiceNoteTranscript || '');
+    setDraftVoiceDataUrl(zState?.voiceNoteDataUrl || '');
+    setDraftFlagOpenIssue(zState?.issueStatus === 'open' || (!zState?.notes && !zState?.issueStatus));
+    setVoiceRecordError('');
+  };
+
+  const handleSaveZoneRemark = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!remarkModalZone) return;
+    const targetFlat = flats.find((f) => f.id === remarkModalZone.flatId);
+    const prevZone = targetFlat?.zones?.[remarkModalZone.zoneKey];
+    setSavingZoneRemark(true);
+    try {
+      await updateFlatZone({
+        flatId: remarkModalZone.flatId,
+        zoneKey: remarkModalZone.zoneKey,
+        status: prevZone?.status || 'not_started',
+        sqft: prevZone?.sqft ?? 100,
+        assignedEmployeeId: prevZone?.assignedEmployeeId,
+        notes: draftZoneNotes.trim(),
+        voiceNoteDataUrl: draftVoiceDataUrl,
+        voiceNoteTranscript: draftVoiceTranscript.trim(),
+        issueStatus: draftFlagOpenIssue
+          ? 'open'
+          : prevZone?.issueStatus === 'open'
+            ? 'rectified'
+            : prevZone?.issueStatus,
+        issueReportedBy: session?.displayName || (isSupervisor ? 'Supervisor' : 'Admin'),
+        issueReportedAt: draftFlagOpenIssue ? new Date().toISOString() : prevZone?.issueReportedAt,
+      });
+      setRemarkModalZone(null);
+    } finally {
+      setSavingZoneRemark(false);
+    }
+  };
 
   const projectDur = selectedProject
     ? formatDurationBreakdown(selectedProject.startDate, selectedProject.finishDate, getTodayIso())
@@ -1142,7 +1466,7 @@ export function ProjectsFlatsView({
   return (
     <div className="space-y-6">
       {/* Header & Project/Tower Controls */}
-      <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
+      <div className="flex flex-col gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
             Projects, Towers &amp; Flat Tile Matrix
@@ -1152,7 +1476,38 @@ export function ProjectsFlatsView({
           </p>
         </div>
         {isAdmin ? (
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid="projects-open-site-map-btn"
+              onClick={() => setShowSiteMapModal(true)}
+              disabled={projects.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded-md hover:bg-slate-200 disabled:opacity-50 whitespace-nowrap"
+            >
+              <MapPin className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+              <span>Site Map</span>
+            </button>
+            <button
+              type="button"
+              data-testid="projects-open-qr-studio-btn"
+              onClick={() => setShowQrStudioModal(true)}
+              disabled={projects.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded-md hover:bg-slate-200 disabled:opacity-50 whitespace-nowrap"
+            >
+              <QrCode className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+              <span>Site QR Codes</span>
+            </button>
+            {onOpenProjectLogsReport && (
+              <button
+                type="button"
+                data-testid="projects-open-logs-report-btn"
+                onClick={() => onOpenProjectLogsReport(selectedProjectId || undefined)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded-md hover:bg-slate-200 whitespace-nowrap"
+              >
+                <ScrollText className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                <span>Logs Report</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleOpenCustomizeZones}
@@ -1208,6 +1563,7 @@ export function ProjectsFlatsView({
                 setFloorError('');
                 setFloorPreset('typical');
                 setCustomFloorNum('2');
+                setCustomEndFloorNum('');
                 setCustomFloorLabelInput('');
                 setShowAddFloor(true);
               }}
@@ -1219,8 +1575,41 @@ export function ProjectsFlatsView({
             </button>
           </div>
         ) : (
-          <div className="px-3 py-1.5 text-xs font-medium text-orange-800 bg-orange-50 border border-orange-200 rounded-md whitespace-nowrap">
-            Assigned Tower Scope · Work Allotment &amp; Status Updates
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              data-testid="projects-open-site-map-btn"
+              onClick={() => setShowSiteMapModal(true)}
+              disabled={projects.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+            >
+              <MapPin className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+              <span>Site Map</span>
+            </button>
+            <button
+              type="button"
+              data-testid="projects-open-qr-studio-btn"
+              onClick={() => setShowQrStudioModal(true)}
+              disabled={projects.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+            >
+              <QrCode className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+              <span>Site QR Codes</span>
+            </button>
+            {onOpenProjectLogsReport && (
+              <button
+                type="button"
+                data-testid="projects-open-logs-report-btn"
+                onClick={() => onOpenProjectLogsReport(selectedProjectId || undefined)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 whitespace-nowrap"
+              >
+                <ScrollText className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                <span>Logs Report</span>
+              </button>
+            )}
+            <div className="px-3 py-1.5 text-xs font-medium text-orange-800 bg-orange-50 border border-orange-200 rounded-md whitespace-nowrap">
+              Assigned Tower Scope · Work Allotment &amp; Status Updates
+            </div>
           </div>
         )}
       </div>
@@ -1309,6 +1698,48 @@ export function ProjectsFlatsView({
           </div>
         </div>
       </div>
+
+      {/* Inline Google Maps Active Site Completion Map */}
+      {projects.length > 0 && (
+        <section
+          data-testid="projects-inline-map-section"
+          className="bg-white border border-slate-200 rounded-lg overflow-hidden"
+        >
+          <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50">
+            <div className="flex items-center gap-2 min-w-0">
+              <MapPin className="w-4 h-4 text-orange-700 shrink-0" aria-hidden="true" />
+              <span className="text-sm font-semibold text-slate-900">
+                Active Project Sites Map (Color-Coded by Completion Status)
+              </span>
+            </div>
+            <button
+              type="button"
+              data-testid="toggle-inline-site-map-btn"
+              onClick={() => setShowInlineSiteMap((prev) => !prev)}
+              className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-100 whitespace-nowrap"
+            >
+              {showInlineSiteMap ? 'Hide Map' : 'Show Map'}
+            </button>
+          </div>
+          {showInlineSiteMap && (
+            <ProjectSitesCompletionMap
+              compact
+              projects={projects}
+              towers={towers}
+              flats={flats}
+              tileZoneCatalog={zoneCatalog}
+              selectedProjectId={selectedProjectId}
+              onSelectProject={(projectId) => {
+                setSelectedProjectId(projectId);
+                setSelectedFloorFilter('all');
+              }}
+              onSaveProjectPlaceId={(projectId, placeId) => {
+                void updateProject(projectId, { placeId });
+              }}
+            />
+          )}
+        </section>
+      )}
 
       {/* Project & Tower Timeline + Leadership Contact Strip */}
       {selectedProject && (
@@ -1939,6 +2370,108 @@ export function ProjectsFlatsView({
         </div>
       )}
 
+      {/* Open Tile-Laying Issues Alert Panel (Remains visible to Supervisor/Admin until Rectified) */}
+      {openZoneIssues.length > 0 && (
+        <section
+          data-testid="projects-open-zone-issues-panel"
+          className="bg-amber-50 border border-amber-300 rounded-lg p-4 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-amber-950">
+                Open Flat Tile-Laying Issues &amp; Remarks ({openZoneIssues.length})
+              </h2>
+            </div>
+            <span className="text-xs font-medium text-amber-900">
+              Stays active on Supervisor &amp; Worker screens until rectified
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {openZoneIssues.map((issue) => {
+              const busyKey = `${issue.flatId}_${issue.zoneKey}`;
+              return (
+                <div
+                  key={busyKey}
+                  className="bg-white border border-amber-200 rounded-md p-3 flex flex-col justify-between gap-2 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-900">
+                        Unit <span className="font-mono">{issue.unitNumber}</span> · {issue.zoneLabel}
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-bold uppercase bg-red-50 text-red-800 border border-red-200 rounded">
+                        Open Issue
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {issue.projectName} · {issue.towerName}
+                      {issue.assignedEmployeeName
+                        ? ` · Assigned: ${issue.assignedEmployeeName} (${issue.assignedEmpCode || ''})`
+                        : ' · Unassigned'}
+                    </div>
+                    {issue.notes && (
+                      <div className="text-slate-800 font-medium">{issue.notes}</div>
+                    )}
+                    {issue.voiceNoteTranscript && (
+                      <div className="text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1">
+                        <span className="font-semibold text-orange-800">Voice Note:</span>{' '}
+                        {issue.voiceNoteTranscript}
+                      </div>
+                    )}
+                    {issue.voiceNoteDataUrl && (
+                      <audio
+                        controls
+                        src={issue.voiceNoteDataUrl}
+                        className="w-full h-8 mt-1"
+                        aria-label={`Voice note audio for Unit ${issue.unitNumber} ${issue.zoneLabel}`}
+                      />
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProjectId(issue.projectId);
+                        setSelectedTowerId(issue.towerId);
+                        setSelectedFloorFilter('all');
+                        setSelectedFlatId(issue.flatId);
+                      }}
+                      className="text-[11px] font-semibold text-orange-800 hover:underline"
+                    >
+                      Inspect Flat Zone →
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rectifyingKey === busyKey}
+                      onClick={async () => {
+                        setRectifyingKey(busyKey);
+                        try {
+                          await rectifyFlatZoneIssue({
+                            flatId: issue.flatId,
+                            zoneKey: issue.zoneKey,
+                          });
+                        } finally {
+                          setRectifyingKey(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                      <span>
+                        {rectifyingKey === busyKey ? 'Rectifying...' : 'Mark Rectified'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Main Split: Left Flat Grid + Right Flat Zone Inspector */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Flat Selector Grid */}
@@ -2214,8 +2747,9 @@ export function ProjectsFlatsView({
                   <thead>
                     <tr className="border-b border-slate-200 text-xs font-medium text-slate-500">
                       <th className="py-2 pr-3">Tile-Laying Area</th>
-                      <th className="py-2 px-2 w-24 text-right">Sq.Ft</th>
+                      <th className="py-2 px-2 w-20 text-right">Sq.Ft</th>
                       <th className="py-2 px-2">Assigned Worker</th>
+                      <th className="py-2 px-2 min-w-[200px]">Note &amp; Remarks</th>
                       <th className="py-2 pl-2">Status</th>
                     </tr>
                   </thead>
@@ -2233,9 +2767,15 @@ export function ProjectsFlatsView({
                         currentEmp && !filteredWorkerOptions.some((e) => e.id === currentEmp.id)
                           ? [currentEmp, ...filteredWorkerOptions]
                           : filteredWorkerOptions;
+                      const hasVoice = Boolean(zState.voiceNoteDataUrl || zState.voiceNoteTranscript);
+                      const isOpenIssue = zState.issueStatus === 'open';
+                      const zoneBusyKey = `${selectedFlat.id}_${zoneDef.key}`;
 
                       return (
-                        <tr key={zoneDef.key} className="hover:bg-slate-50/70">
+                        <tr
+                          key={zoneDef.key}
+                          className={isOpenIssue ? 'bg-amber-50/40 hover:bg-amber-50/70' : 'hover:bg-slate-50/70'}
+                        >
                           <td className="py-2.5 pr-3">
                             {isEditing ? (
                               <div className="flex flex-wrap items-center gap-1.5">
@@ -2358,7 +2898,7 @@ export function ProjectsFlatsView({
                                   createHistoryRecord: Boolean(e.target.value),
                                 })
                               }
-                              className="w-full min-w-[140px] px-2 py-1 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:border-orange-600"
+                              className="w-full min-w-[130px] px-2 py-1 text-xs bg-white border border-slate-200 rounded focus:outline-none focus:border-orange-600"
                             >
                               <option value="">Unassigned</option>
                               {selectEmployees.map((emp) => (
@@ -2367,6 +2907,75 @@ export function ProjectsFlatsView({
                                 </option>
                               ))}
                             </select>
+                          </td>
+                          <td className="py-2.5 px-2">
+                            <div className="space-y-1 max-w-[230px]">
+                              {isOpenIssue && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold uppercase bg-red-50 text-red-800 border border-red-200 rounded">
+                                  <Flag className="w-2.5 h-2.5" aria-hidden="true" />
+                                  <span>Open Issue</span>
+                                </span>
+                              )}
+                              {zState.issueStatus === 'rectified' && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded">
+                                  Rectified
+                                </span>
+                              )}
+                              {zState.notes && (
+                                <p className="text-[11px] text-slate-700 leading-snug line-clamp-2">
+                                  {zState.notes}
+                                </p>
+                              )}
+                              {zState.voiceNoteTranscript && (
+                                <p className="text-[10.5px] text-orange-900 bg-orange-50 border border-orange-200 rounded px-1.5 py-0.5 leading-snug line-clamp-2">
+                                  <Volume2 className="w-3 h-3 inline mr-1" aria-hidden="true" />
+                                  {zState.voiceNoteTranscript}
+                                </p>
+                              )}
+                              {zState.voiceNoteDataUrl && (
+                                <audio
+                                  controls
+                                  src={zState.voiceNoteDataUrl}
+                                  className="w-44 h-7"
+                                  aria-label={`Play voice note for ${zoneDef.label}`}
+                                />
+                              )}
+                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                <button
+                                  type="button"
+                                  data-testid={`zone-note-btn-${zoneDef.key}`}
+                                  onClick={() =>
+                                    openZoneRemarkModal(selectedFlat.id, zoneDef.key, zoneDef.label)
+                                  }
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-800 bg-white border border-slate-300 rounded hover:bg-slate-50"
+                                >
+                                  <Mic className="w-3 h-3 text-orange-700" aria-hidden="true" />
+                                  <span>
+                                    {zState.notes || hasVoice ? 'Edit Note / Voice' : 'Add Note / Voice'}
+                                  </span>
+                                </button>
+                                {isOpenIssue && (
+                                  <button
+                                    type="button"
+                                    disabled={rectifyingKey === zoneBusyKey}
+                                    onClick={async () => {
+                                      setRectifyingKey(zoneBusyKey);
+                                      try {
+                                        await rectifyFlatZoneIssue({
+                                          flatId: selectedFlat.id,
+                                          zoneKey: zoneDef.key,
+                                        });
+                                      } finally {
+                                        setRectifyingKey(null);
+                                      }
+                                    }}
+                                    className="px-2 py-0.5 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                                  >
+                                    Rectify
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           </td>
                           <td className="py-2.5 pl-2">
                             <select
@@ -2382,7 +2991,7 @@ export function ProjectsFlatsView({
                                   createHistoryRecord: Boolean(zState.assignedEmployeeId),
                                 })
                               }
-                              className={`w-full min-w-[140px] px-2 py-1 text-xs font-medium rounded border focus:outline-none ${getWorkStatusBadgeClass(
+                              className={`w-full min-w-[130px] px-2 py-1 text-xs font-medium rounded border focus:outline-none ${getWorkStatusBadgeClass(
                                 zState.status
                               )}`}
                             >
@@ -2700,13 +3309,17 @@ export function ProjectsFlatsView({
                   <label htmlFor="new-proj-loc" className="block text-xs font-medium text-slate-700 mb-1">
                     Site Location
                   </label>
-                  <input
+                  <ProjectLocationAutocomplete
                     id="new-proj-loc"
-                    type="text"
                     value={projLocation}
-                    onChange={(e) => setProjLocation(e.target.value)}
-                    placeholder="e.g. Financial District, Hyderabad"
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+                    onChange={(next) => {
+                      setProjLocation(next);
+                      setProjPlaceId('');
+                    }}
+                    onPlaceSelected={(place) => {
+                      setProjLocation(place.formattedAddress);
+                      setProjPlaceId(place.placeId);
+                    }}
                   />
                 </div>
                 <div>
@@ -3126,12 +3739,12 @@ export function ProjectsFlatsView({
                     </div>
                   </div>
 
-                  {/* Uniform vs Site Mixed BHK Plan per Floor */}
-                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md text-xs">
+                  {/* Uniform vs Ordered Slot Layout vs Mixed BHK Plan per Floor */}
+                  <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-md text-xs">
                     <button
                       type="button"
                       onClick={() => setTwrPlanMode('uniform')}
-                      className={`flex-1 py-1.5 font-semibold rounded ${
+                      className={`flex-1 py-1.5 px-2 font-semibold rounded whitespace-nowrap ${
                         twrPlanMode === 'uniform'
                           ? 'bg-white text-slate-900 shadow-sm'
                           : 'text-slate-600 hover:text-slate-900'
@@ -3141,14 +3754,26 @@ export function ProjectsFlatsView({
                     </button>
                     <button
                       type="button"
+                      data-testid="tower-plan-ordered-slots-btn"
+                      onClick={() => setTwrPlanMode('ordered_slots')}
+                      className={`flex-1 py-1.5 px-2 font-semibold rounded whitespace-nowrap ${
+                        twrPlanMode === 'ordered_slots'
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Ordered Slot Layout (Per Flat #)
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setTwrPlanMode('mixed')}
-                      className={`flex-1 py-1.5 font-semibold rounded ${
+                      className={`flex-1 py-1.5 px-2 font-semibold rounded whitespace-nowrap ${
                         twrPlanMode === 'mixed'
                           ? 'bg-white text-slate-900 shadow-sm'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      Mixed BHK Plan (e.g. 3×3BHK + 3×2BHK)
+                      Mixed Counts (BHK Totals)
                     </button>
                   </div>
 
@@ -3182,13 +3807,120 @@ export function ProjectsFlatsView({
                         />
                       </div>
                     </div>
+                  ) : twrPlanMode === 'ordered_slots' ? (
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-3">
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-semibold text-slate-800">
+                          Quick High-Rise Tower Templates (e.g. Floor 1 to 45):
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {FLOOR_LAYOUT_PRESETS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() => setTwrOrderedSlots([...preset.slotUnitTypes])}
+                              className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-300 rounded hover:border-orange-500 hover:bg-orange-50 text-slate-800"
+                              title={preset.shortDesc}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-slate-700">
+                          Flat Position Mapping ({twrOrderedSlots.length} flats per floor):
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setTwrOrderedSlots((prev) =>
+                              prev.length < 24 ? [...prev, '3 BHK'] : prev
+                            )
+                          }
+                          className="px-2 py-1 text-[11px] font-semibold text-orange-800 bg-orange-50 border border-orange-300 rounded hover:bg-orange-100"
+                        >
+                          + Add Flat Slot
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {twrOrderedSlots.map((slotType, idx) => {
+                          const flPreviewNum = `${Math.max(1, Number(startFloor) || 1)}${String(idx + 1).padStart(2, '0')}`;
+                          return (
+                            <div
+                              key={idx}
+                              className="p-2 bg-white border border-slate-200 rounded space-y-1"
+                            >
+                              <div className="flex items-center justify-between text-[11px] font-mono text-slate-600">
+                                <span>
+                                  #{idx + 1} ({flPreviewNum})
+                                </span>
+                                {twrOrderedSlots.length > 1 && (
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove slot ${idx + 1}`}
+                                    onClick={() =>
+                                      setTwrOrderedSlots((prev) => prev.filter((_, i) => i !== idx))
+                                    }
+                                    className="text-slate-400 hover:text-red-700"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
+                              <select
+                                aria-label={`Flat slot ${idx + 1} BHK type`}
+                                value={slotType}
+                                onChange={(e) =>
+                                  setTwrOrderedSlots((prev) =>
+                                    prev.map((v, i) => (i === idx ? e.target.value : v))
+                                  )
+                                }
+                                className="w-full px-1.5 py-1 text-xs bg-white border border-slate-300 rounded"
+                              >
+                                {RESIDENTIAL_BHK_TYPES.map((bhk) => (
+                                  <option key={bhk} value={bhk}>
+                                    {bhk}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="text-[11px] font-mono text-slate-600 space-y-0.5">
+                        <div>
+                          Start floor ({Number(startFloor) || 1}):{' '}
+                          {buildOrderedSlotFloorUnits({
+                            floorNumber: Number(startFloor) || 1,
+                            slotUnitTypes: twrOrderedSlots,
+                          })
+                            .map((u) => `${u.unitNumber}(${u.unitType})`)
+                            .join(', ')}
+                        </div>
+                        {(Number(endFloor) || 1) > (Number(startFloor) || 1) && (
+                          <div>
+                            Top floor ({Number(endFloor)}):{' '}
+                            {buildOrderedSlotFloorUnits({
+                              floorNumber: Number(endFloor) || 1,
+                              slotUnitTypes: twrOrderedSlots,
+                            })
+                              .map((u) => `${u.unitNumber}(${u.unitType})`)
+                              .join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   ) : (
                     <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
                       <div className="text-xs font-medium text-slate-700">
                         Flats Per Floor by BHK Design:
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                        {['3 BHK', '2 BHK', '4 BHK', '1 BHK', 'Penthouse'].map((bhk) => (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                        {['3 BHK', '2 BHK', '4 BHK', '5 BHK', '1 BHK', 'Penthouse'].map((bhk) => (
                           <div key={bhk}>
                             <label
                               htmlFor={`twr-mix-${bhk}`}
@@ -3376,11 +4108,11 @@ export function ProjectsFlatsView({
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md">
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-md">
                 <button
                   type="button"
                   onClick={() => setFloorMode('auto')}
-                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded ${
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded whitespace-nowrap ${
                     floorMode === 'auto'
                       ? 'bg-white text-slate-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
@@ -3390,19 +4122,31 @@ export function ProjectsFlatsView({
                 </button>
                 <button
                   type="button"
+                  data-testid="floor-plan-ordered-slots-btn"
+                  onClick={() => setFloorMode('ordered_slots')}
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded whitespace-nowrap ${
+                    floorMode === 'ordered_slots'
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Ordered Slots
+                </button>
+                <button
+                  type="button"
                   onClick={() => setFloorMode('mixed')}
-                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded ${
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded whitespace-nowrap ${
                     floorMode === 'mixed'
                       ? 'bg-white text-slate-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Mixed BHK Plan
+                  Mixed Counts
                 </button>
                 <button
                   type="button"
                   onClick={() => setFloorMode('custom')}
-                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded ${
+                  className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded whitespace-nowrap ${
                     floorMode === 'custom'
                       ? 'bg-white text-slate-900 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
@@ -3415,7 +4159,9 @@ export function ProjectsFlatsView({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="fl-num" className="block text-xs font-medium text-slate-700 mb-1">
-                    Floor / Level Index (-3=B3, 0=GF, 0.5=Podium)
+                    {floorMode !== 'custom'
+                      ? 'Start Floor (-3=B3, 0=GF, 0.5=Podium)'
+                      : 'Floor / Level Index (-3=B3, 0=GF, 0.5=Podium)'}
                   </label>
                   <input
                     id="fl-num"
@@ -3445,18 +4191,20 @@ export function ProjectsFlatsView({
                       className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md"
                     />
                   </div>
-                ) : floorMode === 'mixed' ? (
+                ) : floorMode === 'mixed' || floorMode === 'ordered_slots' ? (
                   <div>
-                    <label htmlFor="fl-label" className="block text-xs font-medium text-slate-700 mb-1">
-                      Level Display Name (Optional)
+                    <label htmlFor="fl-end-num" className="block text-xs font-medium text-slate-700 mb-1">
+                      To Floor (Optional Range, e.g. 45)
                     </label>
                     <input
-                      id="fl-label"
-                      type="text"
-                      value={customFloorLabelInput}
-                      onChange={(e) => setCustomFloorLabelInput(e.target.value)}
-                      placeholder={formatFloorLabel(Number(customFloorNum) || 0)}
-                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+                      id="fl-end-num"
+                      type="number"
+                      min="1"
+                      max="150"
+                      value={customEndFloorNum}
+                      onChange={(e) => setCustomEndFloorNum(e.target.value)}
+                      placeholder="Single floor if blank"
+                      className="w-full px-3 py-2 text-sm font-mono border border-slate-300 rounded-md"
                     />
                   </div>
                 ) : (
@@ -3476,7 +4224,7 @@ export function ProjectsFlatsView({
                 )}
               </div>
 
-              {floorMode !== 'mixed' && (
+              {floorMode !== 'mixed' && floorMode !== 'ordered_slots' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="fl-label" className="block text-xs font-medium text-slate-700 mb-1">
@@ -3509,13 +4257,89 @@ export function ProjectsFlatsView({
                 </div>
               )}
 
+              {floorMode === 'ordered_slots' && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-semibold text-slate-800">
+                      Quick Floor Plan Templates:
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {FLOOR_LAYOUT_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => setFlOrderedSlots([...preset.slotUnitTypes])}
+                          className="px-2 py-1 text-[11px] font-medium bg-white border border-slate-300 rounded hover:border-orange-500 hover:bg-orange-50 text-slate-800"
+                          title={preset.shortDesc}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-700">
+                      Per-Slot BHK Sequence ({flOrderedSlots.length} flats):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFlOrderedSlots((prev) =>
+                          prev.length < 24 ? [...prev, '3 BHK'] : prev
+                        )
+                      }
+                      className="px-2 py-1 text-[11px] font-semibold text-orange-800 bg-orange-50 border border-orange-300 rounded hover:bg-orange-100"
+                    >
+                      + Add Slot
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {flOrderedSlots.map((slotType, idx) => (
+                      <div key={idx} className="p-2 bg-white border border-slate-200 rounded space-y-1">
+                        <div className="flex items-center justify-between text-[11px] font-mono text-slate-600">
+                          <span>Slot #{idx + 1}</span>
+                          {flOrderedSlots.length > 1 && (
+                            <button
+                              type="button"
+                              aria-label={`Remove floor slot ${idx + 1}`}
+                              onClick={() =>
+                                setFlOrderedSlots((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              className="text-slate-400 hover:text-red-700"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                        <select
+                          aria-label={`Floor slot ${idx + 1} BHK type`}
+                          value={slotType}
+                          onChange={(e) =>
+                            setFlOrderedSlots((prev) =>
+                              prev.map((v, i) => (i === idx ? e.target.value : v))
+                            )
+                          }
+                          className="w-full px-1.5 py-1 text-xs bg-white border border-slate-300 rounded"
+                        >
+                          {RESIDENTIAL_BHK_TYPES.map((bhk) => (
+                            <option key={bhk} value={bhk}>
+                              {bhk}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {floorMode === 'mixed' && (
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-md space-y-2">
                   <div className="text-xs font-medium text-slate-700">
-                    Site Mixed BHK Design (set counts for this floor, e.g. 3×3 BHK + 3×2 BHK + 1×4 BHK):
+                    Site Mixed BHK Design (set counts for this floor, e.g. 4×2 BHK + 4×3 BHK or 5 BHK):
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {['3 BHK', '2 BHK', '4 BHK', '1 BHK', 'Penthouse'].map((bhk) => (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {['3 BHK', '2 BHK', '4 BHK', '5 BHK', '1 BHK', 'Penthouse'].map((bhk) => (
                       <div key={bhk}>
                         <label
                           htmlFor={`fl-mix-${bhk}`}
@@ -4760,6 +5584,182 @@ export function ProjectsFlatsView({
             />
           )}
         />
+      )}
+
+      <ProjectSitesMapModal
+        isOpen={showSiteMapModal}
+        projects={projects}
+        towers={towers}
+        flats={flats}
+        tileZoneCatalog={zoneCatalog}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={(projectId) => {
+          setSelectedProjectId(projectId);
+          setSelectedFloorFilter('all');
+        }}
+        onSaveProjectPlaceId={(projectId, placeId) => {
+          void updateProject(projectId, { placeId });
+        }}
+        onClose={() => setShowSiteMapModal(false)}
+      />
+
+      <CustomQrStudioModal
+        isOpen={showQrStudioModal}
+        onClose={() => setShowQrStudioModal(false)}
+        employees={employees}
+        projects={projects}
+        towers={towers}
+        defaultTarget="sites"
+        initialProjectId={selectedProjectId || undefined}
+        initialTowerId={selectedTowerId || undefined}
+        onPreviewQrProfile={(scanUrl) => {
+          if (onPreviewQrProfile) onPreviewQrProfile(scanUrl);
+        }}
+      />
+
+      {/* Zone Note, Remarks & Voice Note Modal */}
+      {remarkModalZone && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="zone-remark-modal-title"
+        >
+          <div className="w-full max-w-lg bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">
+              <div>
+                <h2 id="zone-remark-modal-title" className="text-base font-semibold text-slate-900">
+                  Note, Remarks &amp; Voice Note
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">{remarkModalZone.zoneLabel}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  stopVoiceRecording();
+                  setRemarkModalZone(null);
+                }}
+                aria-label="Close note and voice modal"
+                className="p-2 text-slate-500 hover:text-slate-900 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveZoneRemark} className="p-6 space-y-4 overflow-y-auto">
+              <div>
+                <label htmlFor="zone-remark-notes" className="block text-xs font-medium text-slate-700 mb-1">
+                  Manual Note / Defect Remark
+                </label>
+                <textarea
+                  id="zone-remark-notes"
+                  rows={3}
+                  value={draftZoneNotes}
+                  onChange={(e) => setDraftZoneNotes(e.target.value)}
+                  placeholder="e.g. Check skirting alignment near balcony door; grout gap 2mm needs rework..."
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
+                />
+              </div>
+
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-md space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-slate-800">
+                    Voice Note Recording &amp; Transcript
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {!isRecordingVoice ? (
+                      <button
+                        type="button"
+                        onClick={startVoiceRecording}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-orange-700 rounded hover:bg-orange-800"
+                      >
+                        <Mic className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Record Voice Note (6s)</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={stopVoiceRecording}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-red-700 rounded hover:bg-red-800"
+                      >
+                        <Square className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Stop Recording</span>
+                      </button>
+                    )}
+                    {draftVoiceDataUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setDraftVoiceDataUrl('')}
+                        className="px-2 py-1 text-xs text-red-700 border border-red-200 bg-white rounded hover:bg-red-50"
+                      >
+                        Clear Audio
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {voiceRecordError && (
+                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
+                    {voiceRecordError}
+                  </p>
+                )}
+
+                {draftVoiceDataUrl && (
+                  <audio controls src={draftVoiceDataUrl} className="w-full h-9" />
+                )}
+
+                <div>
+                  <label
+                    htmlFor="zone-voice-transcript"
+                    className="block text-[11px] font-medium text-slate-600 mb-1"
+                  >
+                    Voice Note Transcript / Spoken Remark
+                  </label>
+                  <input
+                    id="zone-voice-transcript"
+                    type="text"
+                    value={draftVoiceTranscript}
+                    onChange={(e) => setDraftVoiceTranscript(e.target.value)}
+                    placeholder="Auto-transcribed when mic is used, or type voice summary..."
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-md cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={draftFlagOpenIssue}
+                  onChange={(e) => setDraftFlagOpenIssue(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-orange-700"
+                />
+                <span className="text-xs text-amber-950">
+                  <strong>Flag as Open Issue:</strong> Shows alert on Supervisor dashboard until rectified and pops up automatically on the Assigned Worker&rsquo;s screen.
+                </span>
+              </label>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopVoiceRecording();
+                    setRemarkModalZone(null);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingZoneRemark}
+                  className="px-4 py-2 text-sm font-semibold text-white bg-orange-700 rounded-md hover:bg-orange-800 disabled:opacity-50"
+                >
+                  {savingZoneRemark ? 'Saving...' : 'Save Note & Remarks'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AttendanceRecord, Employee } from '../types/avy';
-import { buildEmployeeQrPassData, buildEmployeeQrScanUrl } from './qrProfile';
-import { resolveQuickScanInput, validateQuickScanCandidate } from './quickScanAttendance';
+import type { AttendanceRecord, Employee, Project, Tower } from '../types/avy';
+import {
+  buildEmployeeQrPassData,
+  buildEmployeeQrScanUrl,
+  buildSiteQrPassData,
+  buildSiteQrScanUrl,
+} from './qrProfile';
+import {
+  resolveQuickScanInput,
+  resolveSiteQrScanInput,
+  validateQuickScanCandidate,
+} from './quickScanAttendance';
 
 const mkEmp = (overrides: Partial<Employee> = {}): Employee => ({
   id: 'emp_raju',
@@ -237,4 +246,178 @@ test('getRecentLoggedScans and applyUndoScanToSession revert accidental scans an
   });
   assert.equal(recheck.canLog, true);
 });
+
+test('resolveSiteQrScanInput extracts project, tower, and checkpoint from generated site QR URLs', () => {
+  const proj: Project = {
+    id: 'proj_skyline',
+    ownerId: 'u1',
+    name: 'Skyline Heights Residency',
+    location: 'Jubilee Hills, Hyderabad',
+    clientName: 'Skyline Builders',
+    startDate: '2026-01-01',
+    finishDate: '2026-12-31',
+    status: 'active',
+    managerName: 'Srinivas',
+    managerPhone: '9848000001',
+    engineerName: 'Anil',
+    engineerPhone: '9848000002',
+    createdAt: '',
+    updatedAt: '',
+  };
+  const towerA: Tower = {
+    id: 'twr_a',
+    ownerId: 'u1',
+    projectId: 'proj_skyline',
+    name: 'Tower A',
+    totalFloors: 10,
+    unitsPerFloor: 4,
+    supervisorName: 'Prakash Reddy',
+    supervisorPhone: '9848011229',
+    createdAt: '',
+    updatedAt: '',
+  };
+
+  const pass = buildSiteQrPassData({
+    project: proj,
+    tower: towerA,
+    companyName: 'AVY INFRA',
+    checkpointLabel: 'Attendance Check-In',
+    employees: [],
+    flats: [],
+    attendance: [],
+    todayIso: '2026-11-20',
+  });
+  const url = buildSiteQrScanUrl({
+    origin: 'https://avy-site.app',
+    passData: pass,
+  });
+
+  const matched = resolveSiteQrScanInput(url, [proj], [towerA]);
+  assert.equal(matched.ok, true);
+  assert.equal(matched.projectId, 'proj_skyline');
+  assert.equal(matched.towerId, 'twr_a');
+  assert.equal(matched.towerName, 'Tower A');
+  assert.equal(matched.checkpointLabel, 'Attendance Check-In');
+
+  const nonSite = resolveSiteQrScanInput('AVY-MSN-001', [proj], [towerA]);
+  assert.equal(nonSite.ok, false);
+});
+
+test('validateQuickScanCandidate handles check_out mode for unmarked, absent, checked-in, and already checked-out workers', () => {
+  const raju = mkEmp({ id: 'emp_raju' });
+  const kiran = mkEmp({ id: 'emp_kiran', empCode: 'AVY-HLP-002' });
+  const absentWorker = mkEmp({ id: 'emp_absent', empCode: 'AVY-HLP-003' });
+  const checkedOutWorker = mkEmp({ id: 'emp_out', empCode: 'AVY-MSN-004' });
+
+  const attendance: AttendanceRecord[] = [
+    {
+      id: 'att_raju',
+      ownerId: 'u1',
+      date: '2026-11-22',
+      employeeId: 'emp_raju',
+      empCode: 'AVY-MSN-001',
+      employeeName: 'Raju Kumar',
+      employeeRole: 'Mason',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      towerId: 't1',
+      towerName: 'Tower A',
+      status: 'present',
+      inTime: '09:05',
+      overtimeHours: 0,
+      dailyWageEarned: 1000,
+      overtimePayEarned: 0,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'att_abs',
+      ownerId: 'u1',
+      date: '2026-11-22',
+      employeeId: 'emp_absent',
+      empCode: 'AVY-HLP-003',
+      employeeName: 'Absent Worker',
+      employeeRole: 'Helper',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      towerId: 't1',
+      towerName: 'Tower A',
+      status: 'absent',
+      overtimeHours: 0,
+      dailyWageEarned: 0,
+      overtimePayEarned: 0,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'att_out',
+      ownerId: 'u1',
+      date: '2026-11-22',
+      employeeId: 'emp_out',
+      empCode: 'AVY-MSN-004',
+      employeeName: 'Done Worker',
+      employeeRole: 'Mason',
+      projectId: 'p1',
+      projectName: 'Skyline',
+      towerId: 't1',
+      towerName: 'Tower A',
+      status: 'present',
+      inTime: '09:00',
+      outTime: '18:30',
+      overtimeHours: 0,
+      dailyWageEarned: 1000,
+      overtimePayEarned: 0,
+      notes: '',
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+
+  // Checked in worker can check out
+  const rajuOut = validateQuickScanCandidate({
+    employee: raju,
+    date: '2026-11-22',
+    existingAttendance: attendance,
+    sessionLoggedIds: new Set(),
+    mode: 'check_out',
+  });
+  assert.equal(rajuOut.canLog, true);
+  assert.equal(rajuOut.existingRecord?.id, 'att_raju');
+
+  // Unmarked worker cannot check out
+  const kiranOut = validateQuickScanCandidate({
+    employee: kiran,
+    date: '2026-11-22',
+    existingAttendance: attendance,
+    sessionLoggedIds: new Set(),
+    mode: 'check_out',
+  });
+  assert.equal(kiranOut.canLog, false);
+  assert.equal(kiranOut.issue, 'not_checked_in_yet');
+
+  // Absent worker cannot check out
+  const absOut = validateQuickScanCandidate({
+    employee: absentWorker,
+    date: '2026-11-22',
+    existingAttendance: attendance,
+    sessionLoggedIds: new Set(),
+    mode: 'check_out',
+  });
+  assert.equal(absOut.canLog, false);
+  assert.equal(absOut.issue, 'absent_cannot_checkout');
+
+  // Already checked out worker blocked
+  const doneOut = validateQuickScanCandidate({
+    employee: checkedOutWorker,
+    date: '2026-11-22',
+    existingAttendance: attendance,
+    sessionLoggedIds: new Set(),
+    mode: 'check_out',
+  });
+  assert.equal(doneOut.canLog, false);
+  assert.equal(doneOut.issue, 'already_checked_out');
+});
+
 

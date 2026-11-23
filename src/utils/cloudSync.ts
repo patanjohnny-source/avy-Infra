@@ -4,6 +4,7 @@ import { clampString, sanitizeId, stripUndefinedDeep } from '../lib/firebase';
 import type { FlatUnit, TileZoneState } from '../types/avy';
 import { TILE_ZONES } from './tileZones';
 import { DEFAULT_WEEKLY_EXPENSE_BUDGET } from './operations';
+import { trimEmployeeBackupDocumentsForCloud } from './employeeBackup';
 
 export function buildUidNamespacePrefix(uid: string): string {
   const cleanUid = sanitizeId(uid).slice(0, 10) || 'user';
@@ -35,6 +36,7 @@ export interface CloudSeedPayload {
   towers: Array<{ id: string; data: Record<string, unknown> }>;
   flats: Array<{ id: string; data: Record<string, unknown> }>;
   employeeDocuments: Array<{ id: string; data: Record<string, unknown> }>;
+  removedEmployees: Array<{ id: string; data: Record<string, unknown> }>;
   deployments: Array<{ id: string; data: Record<string, unknown> }>;
   assignments: Array<{ id: string; data: Record<string, unknown> }>;
   attendance: Array<{ id: string; data: Record<string, unknown> }>;
@@ -44,6 +46,7 @@ export interface CloudSeedPayload {
   dailySiteLogs: Array<{ id: string; data: Record<string, unknown> }>;
   billingDocuments: Array<{ id: string; data: Record<string, unknown> }>;
   companyDocuments: Array<{ id: string; data: Record<string, unknown> }>;
+  teamMessages: Array<{ id: string; data: Record<string, unknown> }>;
 }
 
 export function buildNamespacedCloudSeedPayload(
@@ -113,6 +116,12 @@ export function buildNamespacedCloudSeedPayload(
         typeof cp?.idCardBgOpacity === 'number' && Number.isFinite(cp.idCardBgOpacity)
           ? Math.max(0, Math.min(1, cp.idCardBgOpacity))
           : 0.22,
+      ...(cp?.quotationLetterheadBgDataUrl
+        ? { quotationLetterheadBgDataUrl: cp.quotationLetterheadBgDataUrl.slice(0, 240000) }
+        : {}),
+      ...(typeof cp?.quotationLetterheadOpacity === 'number' && Number.isFinite(cp.quotationLetterheadOpacity)
+        ? { quotationLetterheadOpacity: Math.max(0, Math.min(1, cp.quotationLetterheadOpacity)) }
+        : {}),
       tileZoneCatalog: stripUndefinedDeep(catalog).slice(0, 40),
     }),
   };
@@ -123,6 +132,7 @@ export function buildNamespacedCloudSeedPayload(
       ownerId: uid,
       name: ensureMinString(p.name, 1, 120, 'Site Project'),
       location: clampString(p.location, 160),
+      placeId: clampString(p.placeId, 160),
       clientName: clampString(p.clientName, 120),
       status: p.status,
       startDate: clampString(p.startDate, 24),
@@ -175,6 +185,9 @@ export function buildNamespacedCloudSeedPayload(
         currentTowerId: mappedTowerId,
         currentTowerName: mappedTowerId ? clampString(e.currentTowerName, 80) : '',
         assignedTowerIds: mappedAssignedTowers,
+        skillTags: Array.isArray(e.skillTags)
+          ? e.skillTags.map((t) => clampString(t, 40)).filter(Boolean).slice(0, 20)
+          : [],
         loginPin: clampString(e.loginPin || defaults.userPin, 24),
         qrToken: clampString(e.qrToken, 48),
         status: e.status,
@@ -332,6 +345,8 @@ export function buildNamespacedCloudSeedPayload(
         towerId: att.towerId && validTowerIds.has(att.towerId) ? mapId(att.towerId) : '',
         towerName: clampString(att.towerName, 80),
         status: att.status,
+        ...(att.inTime ? { inTime: clampString(att.inTime, 12) } : {}),
+        ...(att.outTime ? { outTime: clampString(att.outTime, 12) } : {}),
         overtimeHours: Math.max(0, Math.min(24, Number(att.overtimeHours) || 0)),
         dailyWageEarned: Math.max(0, Math.min(100000, Number(att.dailyWageEarned) || 0)),
         overtimePayEarned: Math.max(0, Math.min(100000, Number(att.overtimePayEarned) || 0)),
@@ -372,6 +387,13 @@ export function buildNamespacedCloudSeedPayload(
         ...(adv.proofImageDataUrl ? { proofImageDataUrl: adv.proofImageDataUrl.slice(0, 240000) } : {}),
         notes: clampString(adv.notes, 300),
         whatsappShared: Boolean(adv.whatsappShared),
+        ...(adv.approvalStatus ? { approvalStatus: adv.approvalStatus } : {}),
+        ...(adv.approvalBatchId ? { approvalBatchId: clampString(adv.approvalBatchId, 80) } : {}),
+        ...(adv.submittedByName ? { submittedByName: clampString(adv.submittedByName, 100) } : {}),
+        ...(adv.submittedByRole ? { submittedByRole: adv.submittedByRole } : {}),
+        ...(adv.approvedByName ? { approvedByName: clampString(adv.approvedByName, 100) } : {}),
+        ...(adv.approvedAt ? { approvedAt: clampString(adv.approvedAt, 40) } : {}),
+        ...(adv.approvalNote ? { approvalNote: clampString(adv.approvalNote, 300) } : {}),
       }),
     }));
 
@@ -397,6 +419,14 @@ export function buildNamespacedCloudSeedPayload(
         ...(exp.upiId ? { upiId: clampString(exp.upiId, 120) } : {}),
         ...(exp.proofImageDataUrl ? { proofImageDataUrl: exp.proofImageDataUrl.slice(0, 240000) } : {}),
         notes: clampString(exp.notes, 300),
+        ...(exp.recordedByRole ? { recordedByRole: exp.recordedByRole } : {}),
+        ...(exp.recordedByName ? { recordedByName: clampString(exp.recordedByName, 100) } : {}),
+        ...(exp.recordedByEmployeeId && validEmployeeIds.has(exp.recordedByEmployeeId)
+          ? { recordedByEmployeeId: mapId(exp.recordedByEmployeeId) }
+          : {}),
+        ...(exp.toolItemsSummary ? { toolItemsSummary: clampString(exp.toolItemsSummary, 200) } : {}),
+        ...(exp.billReceiptNumber ? { billReceiptNumber: clampString(exp.billReceiptNumber, 80) } : {}),
+        ...(exp.reimbursementStatus ? { reimbursementStatus: exp.reimbursementStatus } : {}),
       }),
     }));
 
@@ -480,6 +510,12 @@ export function buildNamespacedCloudSeedPayload(
         notes: clampString(b.notes, 500),
         terms: clampString(b.terms, 800),
         whatsappShared: Boolean(b.whatsappShared),
+        ...(b.useCustomLetterhead !== undefined ? { useCustomLetterhead: Boolean(b.useCustomLetterhead) } : {}),
+        ...(b.hideDefaultHeader !== undefined ? { hideDefaultHeader: Boolean(b.hideDefaultHeader) } : {}),
+        ...(b.letterheadBgDataUrl ? { letterheadBgDataUrl: b.letterheadBgDataUrl.slice(0, 240000) } : {}),
+        ...(typeof b.letterheadBgOpacity === 'number' && Number.isFinite(b.letterheadBgOpacity)
+          ? { letterheadBgOpacity: Math.max(0, Math.min(1, b.letterheadBgOpacity)) }
+          : {}),
       }),
     }));
 
@@ -512,6 +548,123 @@ export function buildNamespacedCloudSeedPayload(
     }),
   }));
 
+  const teamMessages = (source.teamMessages || []).map((m) => {
+    const mappedSender =
+      m.senderId && validEmployeeIds.has(m.senderId) ? mapId(m.senderId) : clampString(m.senderId, 128);
+    const mappedRecipient =
+      m.recipientId && validEmployeeIds.has(m.recipientId)
+        ? mapId(m.recipientId)
+        : clampString(m.recipientId, 128);
+    const mappedThreadId =
+      m.channelType === 'tower' && m.towerId && validTowerIds.has(m.towerId)
+        ? `channel:tower:${mapId(m.towerId)}`
+        : m.channelType === 'direct' && mappedSender && mappedRecipient
+          ? `dm:${[mappedSender, mappedRecipient].sort((a, b) => a.localeCompare(b)).join('__')}`
+          : clampString(m.threadId, 160);
+
+    return {
+      id: mapId(m.id),
+      data: stripUndefinedDeep({
+        ownerId: uid,
+        threadId: mappedThreadId || 'channel:all',
+        channelType: m.channelType,
+        ...(m.projectId && validProjectIds.has(m.projectId) ? { projectId: mapId(m.projectId) } : {}),
+        ...(m.towerId && validTowerIds.has(m.towerId) ? { towerId: mapId(m.towerId) } : {}),
+        ...(m.towerName ? { towerName: clampString(m.towerName, 80) } : {}),
+        senderId: ensureMinString(mappedSender, 1, 128, 'admin_hq'),
+        senderName: ensureMinString(m.senderName, 1, 100, 'Staff'),
+        senderRole: m.senderRole,
+        ...(mappedRecipient ? { recipientId: mappedRecipient } : {}),
+        ...(m.recipientName ? { recipientName: clampString(m.recipientName, 100) } : {}),
+        ...(m.recipientRole ? { recipientRole: m.recipientRole } : {}),
+        body: ensureMinString(m.body, 1, 1200, 'Message'),
+        ...(m.attachmentName ? { attachmentName: clampString(m.attachmentName, 180) } : {}),
+        ...(m.attachmentMimeType ? { attachmentMimeType: clampString(m.attachmentMimeType, 120) } : {}),
+        ...(m.attachmentDataUrl ? { attachmentDataUrl: m.attachmentDataUrl.slice(0, 340000) } : {}),
+        readByIds: Array.isArray(m.readByIds)
+          ? m.readByIds
+              .map((rid) => (validEmployeeIds.has(rid) ? mapId(rid) : clampString(rid, 128)))
+              .filter(Boolean)
+              .slice(0, 200)
+          : [],
+      }),
+    };
+  });
+
+  const removedEmployees = (source.removedEmployees || []).map((b) => {
+    const mappedEmpId = mapId(b.employeeId || b.employeeSnapshot?.id || b.empCode || b.id);
+    const snap = b.employeeSnapshot;
+    const mappedProjId =
+      snap?.currentProjectId && validProjectIds.has(snap.currentProjectId)
+        ? mapId(snap.currentProjectId)
+        : '';
+    const mappedTowerId =
+      snap?.currentTowerId && validTowerIds.has(snap.currentTowerId)
+        ? mapId(snap.currentTowerId)
+        : '';
+    const { cloudDocuments } = trimEmployeeBackupDocumentsForCloud(
+      (b.documents || []).map((d) => ({
+        ...d,
+        id: mapId(d.id),
+        ownerId: uid,
+        employeeId: mappedEmpId,
+      }))
+    );
+
+    return {
+      id: mapId(b.id),
+      data: stripUndefinedDeep({
+        ownerId: uid,
+        employeeId: mappedEmpId,
+        empCode: ensureMinString(b.empCode, 1, 32, 'EMP'),
+        fullName: ensureMinString(b.fullName, 1, 100, 'Worker'),
+        role: b.role,
+        phone: ensureMinString(b.phone, 1, 24, 'N/A'),
+        joiningDate: ensureMinString(b.joiningDate, 8, 24, today),
+        removedAt: ensureMinString(b.removedAt, 8, 40, new Date().toISOString()),
+        removedByName: ensureMinString(b.removedByName, 1, 100, 'Admin'),
+        removalReason: clampString(b.removalReason, 300),
+        employeeSnapshot: stripUndefinedDeep({
+          ...(snap || {}),
+          id: mappedEmpId,
+          ownerId: uid,
+          empCode: ensureMinString(snap?.empCode || b.empCode, 1, 32, 'EMP'),
+          fullName: ensureMinString(snap?.fullName || b.fullName, 1, 100, 'Worker'),
+          role: snap?.role || b.role,
+          phone: ensureMinString(snap?.phone || b.phone, 1, 24, 'N/A'),
+          photoDataUrl: (snap?.photoDataUrl || '').slice(0, 120000),
+          currentProjectId: mappedProjId,
+          currentProjectName: mappedProjId ? clampString(snap?.currentProjectName, 120) : '',
+          currentTowerId: mappedTowerId,
+          currentTowerName: mappedTowerId ? clampString(snap?.currentTowerName, 80) : '',
+          assignedTowerIds: Array.isArray(snap?.assignedTowerIds)
+            ? snap.assignedTowerIds
+                .filter((tid) => validTowerIds.has(tid))
+                .map((tid) => mapId(tid))
+                .slice(0, 30)
+            : [],
+          skillTags: Array.isArray(snap?.skillTags)
+            ? snap.skillTags.map((t) => clampString(t, 40)).filter(Boolean).slice(0, 20)
+            : [],
+        }),
+        documents: stripUndefinedDeep(cloudDocuments),
+        summary: stripUndefinedDeep({
+          attendanceCount: Math.max(0, Number(b.summary?.attendanceCount) || 0),
+          presentDays: Math.max(0, Number(b.summary?.presentDays) || 0),
+          halfDays: Math.max(0, Number(b.summary?.halfDays) || 0),
+          absentDays: Math.max(0, Number(b.summary?.absentDays) || 0),
+          totalWagesEarned: Math.max(0, Number(b.summary?.totalWagesEarned) || 0),
+          totalAdvances: Math.max(0, Number(b.summary?.totalAdvances) || 0),
+          totalSettled: Math.max(0, Number(b.summary?.totalSettled) || 0),
+          netPayable: Number(b.summary?.netPayable) || 0,
+          deploymentsCount: Math.max(0, Number(b.summary?.deploymentsCount) || 0),
+          assignmentsCount: Math.max(0, Number(b.summary?.assignmentsCount) || 0),
+          documentsCount: Math.max(0, Number(b.summary?.documentsCount) || 0),
+        }),
+      }),
+    };
+  });
+
   return {
     companyProfile,
     projects,
@@ -519,6 +672,7 @@ export function buildNamespacedCloudSeedPayload(
     towers,
     flats,
     employeeDocuments,
+    removedEmployees,
     deployments,
     assignments,
     attendance,
@@ -528,5 +682,6 @@ export function buildNamespacedCloudSeedPayload(
     dailySiteLogs,
     billingDocuments,
     companyDocuments,
+    teamMessages,
   };
 }

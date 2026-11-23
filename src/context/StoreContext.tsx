@@ -38,6 +38,7 @@ import {
   getTodayIso,
 } from '../data/seedData';
 import type {
+  AdvanceApprovalStatus,
   AdvanceEntry,
   AdvanceType,
   AssignmentStatus,
@@ -62,8 +63,12 @@ import type {
   FlatUnit,
   PaymentMode,
   Project,
+  RemovedEmployeeBackup,
   SettlementEntry,
   SiteExpense,
+  TeamMessage,
+  TeamMessageActorRole,
+  TeamMessageChannelType,
   TileZoneCategory,
   TileZoneDefinition,
   TileZoneKey,
@@ -71,6 +76,11 @@ import type {
   WorkAssignment,
   ZoneStatus,
 } from '../types/avy';
+import {
+  buildRemovedEmployeeBackup,
+  prepareEmployeeRestorePayload,
+  trimEmployeeBackupDocumentsForCloud,
+} from '../utils/employeeBackup';
 import {
   computeDailyWage,
   computeEmployeePayroll,
@@ -87,6 +97,7 @@ import {
   addCustomZoneToFlatsBatch,
   addCustomZonesToFlatsBatch,
   buildMixedBhkFloorUnits,
+  buildOrderedSlotFloorUnits,
   createDefaultZones,
   formatFloorLabel,
   generateUnitNumbersForFloor,
@@ -101,7 +112,10 @@ import {
 import {
   DEFAULT_WEEKLY_EXPENSE_BUDGET,
   findActiveUnfinishedAssignment,
+  getCurrentHHMM,
   isSundayDate,
+  normalizeHHMM,
+  normalizeSkillTags,
 } from '../utils/operations';
 import {
   AuthRole,
@@ -113,6 +127,7 @@ import {
   authenticateWorkspaceUser,
   canAccessTower,
   canSupervisorUpdateEmployee,
+  canViewEmployeeFixedSalary,
   evaluateAttendanceMutation,
 } from '../utils/authAccess';
 import { buildNamespacedCloudSeedPayload } from '../utils/cloudSync';
@@ -121,6 +136,7 @@ import {
   buildEmployeeQrScanUrl,
   generateQrPassToken,
 } from '../utils/qrProfile';
+import { ADMIN_ACTOR_ID } from '../utils/messenger';
 
 const LOCAL_STORAGE_KEY = 'avy_infra_workspace_v1';
 const AUTH_SESSION_KEY = 'avy_infra_auth_session_v1';
@@ -226,6 +242,7 @@ function loadLocalWorkspace(): WorkspaceSnapshot {
               : emp.assignedTowerIds,
       })),
       employeeDocuments: parsed.employeeDocuments || [],
+      removedEmployees: Array.isArray(parsed.removedEmployees) ? parsed.removedEmployees : [],
       deployments: parsed.deployments || [],
       assignments: parsed.assignments || [],
       attendance: parsed.attendance || [],
@@ -239,6 +256,9 @@ function loadLocalWorkspace(): WorkspaceSnapshot {
       companyDocuments: Array.isArray(parsed.companyDocuments)
         ? parsed.companyDocuments
         : createSeedWorkspace('local-avy-infra').companyDocuments,
+      teamMessages: Array.isArray(parsed.teamMessages)
+        ? parsed.teamMessages
+        : createSeedWorkspace('local-avy-infra').teamMessages,
     };
   } catch {
     return createSeedWorkspace('local-avy-infra');
@@ -310,6 +330,7 @@ interface StoreContextValue extends WorkspaceSnapshot {
   addProject: (input: {
     name: string;
     location: string;
+    placeId?: string;
     clientName: string;
     startDate?: string;
     finishDate?: string;
@@ -327,6 +348,7 @@ interface StoreContextValue extends WorkspaceSnapshot {
     unitsPerFloor: number;
     unitType: string;
     mixedSpecsPerFloor?: MixedBhkSpec[];
+    orderedSlotTypes?: string[];
     commonAreaItems?: WholeFloorCustomZoneItem[];
     specialLevels?: ('basement_3' | 'basement_2' | 'basement_1' | 'ground' | 'podium')[];
     specialUnitsPerLevel?: number;
@@ -346,11 +368,13 @@ interface StoreContextValue extends WorkspaceSnapshot {
     projectId: string;
     towerId: string;
     floorNumber: number;
+    endFloorNumber?: number;
     floorLabel?: string;
     unitsCount: number;
     unitType: string;
     customUnitNumbers?: string[];
     mixedSpecs?: MixedBhkSpec[];
+    orderedSlotTypes?: string[];
     unitSpecs?: GeneratedFlatUnitSpec[];
     commonAreaItems?: WholeFloorCustomZoneItem[];
   }) => Promise<FlatUnit[]>;
@@ -363,7 +387,18 @@ interface StoreContextValue extends WorkspaceSnapshot {
     sqft: number;
     assignedEmployeeId?: string | null;
     notes?: string;
+    voiceNoteDataUrl?: string;
+    voiceNoteTranscript?: string;
+    issueStatus?: 'open' | 'rectified';
+    issueReportedBy?: string;
+    issueReportedAt?: string;
+    rectifiedAt?: string;
     createHistoryRecord?: boolean;
+  }) => Promise<void>;
+  rectifyFlatZoneIssue: (input: {
+    flatId: string;
+    zoneKey: TileZoneKey;
+    resolvedNote?: string;
   }) => Promise<void>;
 
   // Employee, Documents & Site Deployment actions
@@ -385,9 +420,18 @@ interface StoreContextValue extends WorkspaceSnapshot {
     photoDataUrl?: string;
     currentProjectId?: string;
     currentTowerId?: string;
+    skillTags?: string[];
     notes?: string;
   }) => Promise<Employee>;
   updateEmployee: (employeeId: string, patch: Partial<Employee>) => Promise<void>;
+  removeEmployeeWithBackup: (input: {
+    employeeId: string;
+    removalReason?: string;
+  }) => Promise<RemovedEmployeeBackup>;
+  restoreEmployeeBackup: (
+    backupOrId: string | RemovedEmployeeBackup
+  ) => Promise<{ employee: Employee; codeReassigned: boolean }>;
+  deleteEmployeeBackupPermanently: (backupId: string) => Promise<void>;
   addEmployeeDocument: (input: {
     employeeId: string;
     docCategory: 'aadhar_pdf' | 'other';
@@ -432,6 +476,8 @@ interface StoreContextValue extends WorkspaceSnapshot {
     projectId: string;
     towerId?: string;
     status: AttendanceStatus;
+    inTime?: string;
+    outTime?: string;
     overtimeHours: number;
     notes?: string;
   }) => Promise<void>;
@@ -441,12 +487,26 @@ interface StoreContextValue extends WorkspaceSnapshot {
     projectId: string;
     towerId?: string;
     status: AttendanceStatus;
+    inTime?: string;
+    outTime?: string;
     overtimeHours: number;
     notes?: string;
     editReason: string;
     adminPin?: string;
   }) => Promise<void>;
-  bulkMarkAttendancePresent: (date: string, projectId: string, towerId?: string) => Promise<void>;
+  punchAttendanceOut: (input: {
+    attendanceId?: string;
+    employeeId?: string;
+    date: string;
+    outTime?: string;
+    overtimeHours?: number;
+  }) => Promise<void>;
+  bulkMarkAttendancePresent: (
+    date: string,
+    projectId: string,
+    towerId?: string,
+    inTime?: string
+  ) => Promise<void>;
   deleteAttendanceRecord: (date: string, employeeId: string) => Promise<void>;
   addAdvance: (input: {
     date: string;
@@ -463,6 +523,10 @@ interface StoreContextValue extends WorkspaceSnapshot {
     towerId?: string;
     isSundayRun?: boolean;
     notes?: string;
+    approvalStatus?: AdvanceApprovalStatus;
+    approvalBatchId?: string;
+    submittedByName?: string;
+    submittedByRole?: 'admin' | 'supervisor';
   }) => Promise<{ advance: AdvanceEntry; whatsappMessage: string; updatedNetBalance: number }>;
   bulkAddAdvances: (
     entries: Array<{
@@ -488,7 +552,14 @@ interface StoreContextValue extends WorkspaceSnapshot {
     entries: { employeeId: string; amount: number }[];
     paymentMode: PaymentMode;
     notes?: string;
+    approvalStatus?: AdvanceApprovalStatus;
+    approvalBatchId?: string;
   }) => Promise<AdvanceEntry[]>;
+  reviewWeeklyFoodApproval: (input: {
+    advanceIds: string[];
+    decision: 'approved' | 'rejected';
+    note?: string;
+  }) => Promise<void>;
   markAdvanceWhatsappShared: (advanceId: string) => Promise<void>;
   acknowledgeAdvance: (advanceId: string, acknowledgedBy?: string) => Promise<void>;
   recordAdvanceFollowUpSent: (advanceId: string) => Promise<void>;
@@ -507,7 +578,13 @@ interface StoreContextValue extends WorkspaceSnapshot {
     upiId?: string;
     proofImageDataUrl?: string;
     notes?: string;
+    toolItemsSummary?: string;
+    billReceiptNumber?: string;
   }) => Promise<SiteExpense>;
+  reviewSupervisorExpense: (
+    expenseId: string,
+    status: 'approved' | 'reimbursed'
+  ) => Promise<void>;
   deleteExpense: (expenseId: string) => Promise<void>;
   recordSettlement: (input: {
     employeeId: string;
@@ -520,6 +597,20 @@ interface StoreContextValue extends WorkspaceSnapshot {
     proofImageDataUrl?: string;
     notes?: string;
   }) => Promise<SettlementEntry>;
+  updateAdvance: (
+    advanceId: string,
+    patch: Partial<{
+      date: string;
+      advanceType: AdvanceType;
+      customCategory: string;
+      amount: number;
+      paymentMode: PaymentMode;
+      paymentApp: string;
+      transactionId: string;
+      upiId: string;
+      notes: string;
+    }>
+  ) => Promise<void>;
   deleteAdvance: (advanceId: string) => Promise<void>;
   addDailySiteLog: (input: {
     date: string;
@@ -558,6 +649,10 @@ interface StoreContextValue extends WorkspaceSnapshot {
     status?: BillingDocStatus;
     notes?: string;
     terms?: string;
+    useCustomLetterhead?: boolean;
+    hideDefaultHeader?: boolean;
+    letterheadBgDataUrl?: string;
+    letterheadBgOpacity?: number;
   }) => Promise<BillingDocument>;
   updateBillingDocument: (
     docId: string,
@@ -589,6 +684,10 @@ interface StoreContextValue extends WorkspaceSnapshot {
       notes: string;
       terms: string;
       whatsappShared: boolean;
+      useCustomLetterhead: boolean;
+      hideDefaultHeader: boolean;
+      letterheadBgDataUrl: string;
+      letterheadBgOpacity: number;
     }>
   ) => Promise<void>;
   convertBillingDocument: (
@@ -623,6 +722,23 @@ interface StoreContextValue extends WorkspaceSnapshot {
   }) => Promise<CompanyDocument>;
   approveCompanyDocument: (docId: string, approvedByName?: string) => Promise<void>;
   deleteCompanyDocument: (docId: string) => Promise<void>;
+
+  // Admin, Supervisors & Employees Team Messenger
+  sendTeamMessage: (input: {
+    threadId: string;
+    channelType: TeamMessageChannelType;
+    body: string;
+    projectId?: string;
+    towerId?: string;
+    towerName?: string;
+    recipientId?: string;
+    recipientName?: string;
+    recipientRole?: TeamMessageActorRole;
+    attachmentName?: string;
+    attachmentMimeType?: string;
+    attachmentDataUrl?: string;
+  }) => Promise<TeamMessage>;
+  markTeamThreadRead: (threadId: string) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -699,6 +815,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       flats: false,
       employees: false,
       employee_docs: false,
+      employee_backups: false,
       deployments: false,
       assignments: false,
       attendance: false,
@@ -708,6 +825,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       site_logs: false,
       billing_docs: false,
       company_documents: false,
+      team_messages: false,
     };
 
     const markLoaded = (key: keyof typeof loadedFlags) => {
@@ -782,6 +900,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     attachCollection<FlatUnit>('flats', 'flats');
     attachCollection<Employee>('employees', 'employees');
     attachCollection<EmployeeDocument>('employee_docs', 'employeeDocuments');
+    attachCollection<RemovedEmployeeBackup>('employee_backups', 'removedEmployees');
     attachCollection<DeploymentRecord>('deployments', 'deployments');
     attachCollection<WorkAssignment>('assignments', 'assignments');
     attachCollection<AttendanceRecord>('attendance', 'attendance');
@@ -791,6 +910,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     attachCollection<DailySiteLog>('site_logs', 'dailySiteLogs');
     attachCollection<BillingDocument>('billing_docs', 'billingDocuments');
     attachCollection<CompanyDocument>('company_documents', 'companyDocuments');
+    attachCollection<TeamMessage>('team_messages', 'teamMessages');
 
     return () => {
       unsubs.forEach((u) => u());
@@ -907,6 +1027,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       // Dependent collections
       await seedCollection('employee_docs', payload.employeeDocuments);
+      await seedCollection('employee_backups', payload.removedEmployees);
       await seedCollection('deployments', payload.deployments);
       await seedCollection('assignments', payload.assignments);
       await seedCollection('attendance', payload.attendance);
@@ -916,6 +1037,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       await seedCollection('site_logs', payload.dailySiteLogs);
       await seedCollection('billing_docs', payload.billingDocuments);
       await seedCollection('company_documents', payload.companyDocuments);
+      await seedCollection('team_messages', payload.teamMessages);
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : 'Cloud sync failed');
       handleFirestoreError(err, OperationType.WRITE, 'seedCloudFromLocal');
@@ -1111,6 +1233,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           Number.isFinite(nextProfile.idCardBgOpacity)
             ? Math.max(0, Math.min(1, nextProfile.idCardBgOpacity))
             : 0.22,
+        quotationLetterheadBgDataUrl: (nextProfile.quotationLetterheadBgDataUrl || '').slice(0, 240000),
+        quotationLetterheadOpacity:
+          typeof nextProfile.quotationLetterheadOpacity === 'number' &&
+          Number.isFinite(nextProfile.quotationLetterheadOpacity)
+            ? Math.max(0, Math.min(1, nextProfile.quotationLetterheadOpacity))
+            : 0.14,
         tileZoneCatalog: stripUndefinedDeep(guaranteedCatalog).slice(0, 40),
       });
 
@@ -1526,6 +1654,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     async (input: {
       name: string;
       location: string;
+      placeId?: string;
       clientName: string;
       startDate?: string;
       finishDate?: string;
@@ -1539,11 +1668,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
       const nowIso = new Date().toISOString();
       const id = sanitizeId(`proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+      const cleanPlaceId = input.placeId ? clampString(input.placeId, 160) : '';
       const project: Project = {
         id,
         ownerId: ownerUid,
         name: clampString(input.name, 120),
         location: clampString(input.location, 160),
+        ...(cleanPlaceId ? { placeId: cleanPlaceId } : {}),
         clientName: clampString(input.clientName, 120),
         status: 'active',
         startDate: clampString(input.startDate || getTodayIso(), 24),
@@ -1562,6 +1693,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ownerId: ownerUid,
             name: project.name,
             location: project.location,
+            ...(cleanPlaceId ? { placeId: cleanPlaceId } : {}),
             clientName: project.clientName,
             status: project.status,
             startDate: project.startDate,
@@ -1644,6 +1776,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       unitsPerFloor: number;
       unitType: string;
       mixedSpecsPerFloor?: MixedBhkSpec[];
+      orderedSlotTypes?: string[];
       commonAreaItems?: WholeFloorCustomZoneItem[];
       specialLevels?: ('basement_3' | 'basement_2' | 'basement_1' | 'ground' | 'podium')[];
       specialUnitsPerLevel?: number;
@@ -1665,6 +1798,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const towerId = sanitizeId(`twr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
       const startFloor = Math.max(0, Math.min(150, input.startFloor));
       const endFloor = Math.max(startFloor, Math.min(150, input.endFloor));
+      const cleanSlotTypes = (input.orderedSlotTypes || [])
+        .map((s) => (s || '').trim().slice(0, 40))
+        .filter(Boolean)
+        .slice(0, 50);
       const cleanMixedSpecs = (input.mixedSpecsPerFloor || []).filter(
         (s) => (s.unitType || '').trim() && (Number(s.count) || 0) > 0
       );
@@ -1673,9 +1810,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         0
       );
       const unitsPerFloor =
-        mixedTotal > 0
-          ? Math.max(1, Math.min(50, mixedTotal))
-          : Math.max(1, Math.min(20, input.unitsPerFloor));
+        cleanSlotTypes.length > 0
+          ? Math.max(1, Math.min(50, cleanSlotTypes.length))
+          : mixedTotal > 0
+            ? Math.max(1, Math.min(50, mixedTotal))
+            : Math.max(1, Math.min(20, input.unitsPerFloor));
       const specialCount = Math.max(1, Math.min(20, input.specialUnitsPerLevel || unitsPerFloor));
       const specialLevels = input.specialLevels || [];
       const totalFloors = Math.max(1, endFloor - startFloor + 1 + specialLevels.length);
@@ -1730,12 +1869,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       for (let f = startFloor; f <= endFloor; f++) {
         if (f === 0 && specialLevels.includes('ground')) continue;
         const unitSpecs: GeneratedFlatUnitSpec[] =
-          cleanMixedSpecs.length > 0
-            ? buildMixedBhkFloorUnits({ floorNumber: f, mixedSpecs: cleanMixedSpecs })
-            : generateUnitNumbersForFloor(f, unitsPerFloor).map((unitNum) => ({
-                unitNumber: unitNum,
-                unitType: input.unitType || '3 BHK',
-              }));
+          cleanSlotTypes.length > 0
+            ? buildOrderedSlotFloorUnits({ floorNumber: f, slotUnitTypes: cleanSlotTypes })
+            : cleanMixedSpecs.length > 0
+              ? buildMixedBhkFloorUnits({ floorNumber: f, mixedSpecs: cleanMixedSpecs })
+              : generateUnitNumbersForFloor(f, unitsPerFloor).map((unitNum) => ({
+                  unitNumber: unitNum,
+                  unitType: input.unitType || '3 BHK',
+                }));
 
         for (const spec of unitSpecs) {
           const flatId = sanitizeId(`flat_${towerId}_${spec.unitNumber.replace(/[^a-zA-Z0-9]/g, '_')}`);
@@ -1901,11 +2042,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       projectId: string;
       towerId: string;
       floorNumber: number;
+      endFloorNumber?: number;
       floorLabel?: string;
       unitsCount: number;
       unitType: string;
       customUnitNumbers?: string[];
       mixedSpecs?: MixedBhkSpec[];
+      orderedSlotTypes?: string[];
       unitSpecs?: GeneratedFlatUnitSpec[];
       commonAreaItems?: WholeFloorCustomZoneItem[];
     }): Promise<FlatUnit[]> => {
@@ -1915,24 +2058,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const nowIso = new Date().toISOString();
       const catalog = workspace.companyProfile?.tileZoneCatalog || TILE_ZONES;
 
-      let resolvedSpecs: GeneratedFlatUnitSpec[];
-      if (input.unitSpecs && input.unitSpecs.length > 0) {
-        resolvedSpecs = input.unitSpecs;
-      } else if (input.mixedSpecs && input.mixedSpecs.length > 0) {
-        resolvedSpecs = buildMixedBhkFloorUnits({
-          floorNumber: input.floorNumber,
-          mixedSpecs: input.mixedSpecs,
-        });
-      } else {
-        const unitNums =
-          input.customUnitNumbers && input.customUnitNumbers.length > 0
-            ? input.customUnitNumbers
-            : generateUnitNumbersForFloor(input.floorNumber, input.unitsCount);
-        resolvedSpecs = unitNums.map((unitNum) => ({
-          unitNumber: unitNum,
-          unitType: input.unitType || '3 BHK',
-        }));
-      }
+      const startFl = input.floorNumber;
+      const isIntegerFloorRange =
+        Number.isInteger(startFl) &&
+        typeof input.endFloorNumber === 'number' &&
+        Number.isInteger(input.endFloorNumber) &&
+        input.endFloorNumber > startFl &&
+        (!input.customUnitNumbers || input.customUnitNumbers.length === 0) &&
+        (!input.unitSpecs || input.unitSpecs.length === 0);
+
+      const floorList: number[] = isIntegerFloorRange
+        ? Array.from(
+            { length: Math.min(150, input.endFloorNumber! - startFl + 1) },
+            (_, idx) => startFl + idx
+          )
+        : [startFl];
+
+      const cleanSlotTypes = (input.orderedSlotTypes || [])
+        .map((s) => (s || '').trim().slice(0, 40))
+        .filter(Boolean)
+        .slice(0, 50);
 
       const existingNums = new Set(
         workspace.flats
@@ -1940,32 +2085,63 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           .map((f) => f.unitNumber.toLowerCase())
       );
 
-      const resolvedLabel = clampString(
-        input.floorLabel || formatFloorLabel(input.floorNumber),
-        60
-      );
-
+      const floorLabelsMap: Record<number, string> = {};
       const created: FlatUnit[] = [];
-      for (const spec of resolvedSpecs) {
-        const unitNum = clampString(spec.unitNumber, 24);
-        if (!unitNum || existingNums.has(unitNum.toLowerCase())) continue;
-        existingNums.add(unitNum.toLowerCase());
-        const flatId = sanitizeId(
-          `flat_${input.towerId}_${unitNum}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+
+      for (const flNum of floorList) {
+        let resolvedSpecs: GeneratedFlatUnitSpec[];
+        if (input.unitSpecs && input.unitSpecs.length > 0 && floorList.length === 1) {
+          resolvedSpecs = input.unitSpecs;
+        } else if (cleanSlotTypes.length > 0) {
+          resolvedSpecs = buildOrderedSlotFloorUnits({
+            floorNumber: flNum,
+            slotUnitTypes: cleanSlotTypes,
+          });
+        } else if (input.mixedSpecs && input.mixedSpecs.length > 0) {
+          resolvedSpecs = buildMixedBhkFloorUnits({
+            floorNumber: flNum,
+            mixedSpecs: input.mixedSpecs,
+          });
+        } else {
+          const unitNums =
+            input.customUnitNumbers && input.customUnitNumbers.length > 0 && floorList.length === 1
+              ? input.customUnitNumbers
+              : generateUnitNumbersForFloor(flNum, input.unitsCount);
+          resolvedSpecs = unitNums.map((unitNum) => ({
+            unitNumber: unitNum,
+            unitType: input.unitType || '3 BHK',
+          }));
+        }
+
+        const resolvedLabel = clampString(
+          floorList.length === 1 && input.floorLabel
+            ? input.floorLabel
+            : formatFloorLabel(flNum),
+          60
         );
-        created.push({
-          id: flatId,
-          ownerId: ownerUid,
-          projectId: input.projectId,
-          towerId: input.towerId,
-          floorNumber: input.floorNumber,
-          floorLabel: resolvedLabel,
-          unitNumber: unitNum,
-          unitType: clampString(spec.unitType || input.unitType || '3 BHK', 40),
-          zones: createDefaultZones(undefined, catalog),
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        });
+        floorLabelsMap[flNum] = resolvedLabel;
+
+        for (const spec of resolvedSpecs) {
+          const unitNum = clampString(spec.unitNumber, 24);
+          if (!unitNum || existingNums.has(unitNum.toLowerCase())) continue;
+          existingNums.add(unitNum.toLowerCase());
+          const flatId = sanitizeId(
+            `flat_${input.towerId}_${unitNum}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`
+          );
+          created.push({
+            id: flatId,
+            ownerId: ownerUid,
+            projectId: input.projectId,
+            towerId: input.towerId,
+            floorNumber: flNum,
+            floorLabel: resolvedLabel,
+            unitNumber: unitNum,
+            unitType: clampString(spec.unitType || input.unitType || '3 BHK', 40),
+            zones: createDefaultZones(undefined, catalog),
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+        }
       }
 
       if (created.length === 0) {
@@ -1978,8 +2154,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           ownerId: ownerUid,
           projectId: input.projectId,
           towerId: input.towerId,
-          floorNumbers: [input.floorNumber],
-          floorLabelsByNumber: { [input.floorNumber]: resolvedLabel },
+          floorNumbers: floorList,
+          floorLabelsByNumber: floorLabelsMap,
           items: input.commonAreaItems.map((it) => ({
             label: clampString(it.label, 80),
             category: it.category,
@@ -2006,7 +2182,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
                 projectId: flat.projectId,
                 towerId: flat.towerId,
                 floorNumber: flat.floorNumber,
-                floorLabel: flat.floorLabel || resolvedLabel,
+                floorLabel: flat.floorLabel || formatFloorLabel(flat.floorNumber),
                 unitNumber: flat.unitNumber,
                 unitType: flat.unitType,
                 zones: stripUndefinedDeep(flat.zones),
@@ -2355,6 +2531,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       sqft: number;
       assignedEmployeeId?: string | null;
       notes?: string;
+      voiceNoteDataUrl?: string;
+      voiceNoteTranscript?: string;
+      issueStatus?: 'open' | 'rectified';
+      issueReportedBy?: string;
+      issueReportedAt?: string;
+      rectifiedAt?: string;
       createHistoryRecord?: boolean;
     }): Promise<void> => {
       if (session?.role === 'employee') {
@@ -2384,6 +2566,42 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const zoneLabel =
         prevZone?.label || catalogMatch?.label || ZONE_LABEL_MAP[input.zoneKey] || input.zoneKey;
 
+      const resolvedVoiceDataUrl =
+        input.voiceNoteDataUrl !== undefined
+          ? input.voiceNoteDataUrl.startsWith('data:audio/')
+            ? input.voiceNoteDataUrl.slice(0, 65000)
+            : ''
+          : prevZone?.voiceNoteDataUrl || '';
+      const resolvedVoiceTranscript =
+        input.voiceNoteTranscript !== undefined
+          ? clampString(input.voiceNoteTranscript, 400)
+          : prevZone?.voiceNoteTranscript || '';
+      const resolvedIssueStatus =
+        input.issueStatus !== undefined ? input.issueStatus : prevZone?.issueStatus;
+      const actorDisplay = clampString(
+        input.issueReportedBy || session?.displayName || 'Site Supervisor',
+        100
+      );
+      const resolvedIssueReportedBy =
+        resolvedIssueStatus === 'open'
+          ? prevZone?.issueStatus === 'open' && prevZone?.issueReportedBy
+            ? prevZone.issueReportedBy
+            : actorDisplay
+          : prevZone?.issueReportedBy || '';
+      const resolvedIssueReportedAt =
+        resolvedIssueStatus === 'open'
+          ? clampString(
+              input.issueReportedAt || prevZone?.issueReportedAt || nowIso,
+              40
+            )
+          : prevZone?.issueReportedAt || '';
+      const resolvedRectifiedAt =
+        resolvedIssueStatus === 'rectified'
+          ? clampString(input.rectifiedAt || nowIso, 40)
+          : resolvedIssueStatus === 'open'
+            ? ''
+            : prevZone?.rectifiedAt || '';
+
       const nextZoneState: FlatUnit['zones'][string] = {
         status: input.status,
         sqft: Number(input.sqft) || prevZone?.sqft || 0,
@@ -2404,6 +2622,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             : prevZone?.assignedEmployeeName || '',
         updatedDate: today,
         notes: input.notes !== undefined ? clampString(input.notes, 300) : prevZone?.notes || '',
+        ...(resolvedVoiceDataUrl ? { voiceNoteDataUrl: resolvedVoiceDataUrl } : {}),
+        ...(resolvedVoiceTranscript ? { voiceNoteTranscript: resolvedVoiceTranscript } : {}),
+        ...(resolvedIssueStatus ? { issueStatus: resolvedIssueStatus } : {}),
+        ...(resolvedIssueReportedBy ? { issueReportedBy: resolvedIssueReportedBy } : {}),
+        ...(resolvedIssueReportedAt ? { issueReportedAt: resolvedIssueReportedAt } : {}),
+        ...(resolvedRectifiedAt ? { rectifiedAt: resolvedRectifiedAt } : {}),
       };
       if (prevZone?.label) nextZoneState.label = prevZone.label;
       if (prevZone?.category) nextZoneState.category = prevZone.category;
@@ -2611,6 +2835,60 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     ]
   );
 
+  const rectifyFlatZoneIssue = useCallback(
+    async (input: {
+      flatId: string;
+      zoneKey: TileZoneKey;
+      resolvedNote?: string;
+    }): Promise<void> => {
+      if (session?.role === 'employee') {
+        throw new Error('Employee login is read-only.');
+      }
+      const flat = workspace.flats.find((f) => f.id === input.flatId);
+      if (!flat) return;
+      if (session?.role === 'supervisor' && !canAccessTower(session, flat.towerId)) {
+        throw new Error('Supervisors can only rectify issues inside their assigned tower.');
+      }
+      const prevZone = flat.zones?.[input.zoneKey];
+      if (!prevZone) return;
+      const nowIso = new Date().toISOString();
+      const today = getTodayIso();
+      const nextZone: FlatUnit['zones'][string] = {
+        ...prevZone,
+        issueStatus: 'rectified',
+        rectifiedAt: nowIso,
+        updatedDate: today,
+        notes:
+          input.resolvedNote !== undefined
+            ? clampString(input.resolvedNote, 300)
+            : prevZone.notes || '',
+      };
+      const updatedZones = stripUndefinedDeep({
+        ...flat.zones,
+        [input.zoneKey]: nextZone,
+      });
+
+      if (cloudConnected) {
+        try {
+          await updateDoc(doc(db, 'flats', flat.id), {
+            zones: updatedZones,
+            ...tsUpdate(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `flats/${flat.id}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          flats: prev.flats.map((f) =>
+            f.id === flat.id ? { ...f, zones: updatedZones, updatedAt: nowIso } : f
+          ),
+        }));
+      }
+    },
+    [cloudConnected, session, workspace.flats]
+  );
+
   // --- Employees, Documents & Site Deployments ---
   const addEmployee = useCallback(
     async (input: {
@@ -2631,6 +2909,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       photoDataUrl?: string;
       currentProjectId?: string;
       currentTowerId?: string;
+      skillTags?: string[];
       notes?: string;
     }): Promise<Employee> => {
       if (session && session.role !== 'admin') {
@@ -2641,6 +2920,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const id = sanitizeId(`emp_${empCode.toLowerCase()}_${Date.now().toString(36)}`);
       const proj = workspace.projects.find((p) => p.id === input.currentProjectId);
       const twr = workspace.towers.find((t) => t.id === input.currentTowerId);
+      const cleanSkills = normalizeSkillTags(input.skillTags);
 
       const employee: Employee = {
         id,
@@ -2667,6 +2947,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         currentTowerName: twr?.name || '',
         assignedTowerIds:
           input.role === 'Supervisor' && twr?.id ? [twr.id] : [],
+        skillTags: cleanSkills,
         loginPin: DEFAULT_USER_PIN,
         qrToken: generateQrPassToken(),
         status: 'active',
@@ -2700,6 +2981,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             currentTowerId: employee.currentTowerId || '',
             currentTowerName: employee.currentTowerName || '',
             assignedTowerIds: employee.assignedTowerIds || [],
+            skillTags: cleanSkills,
             loginPin: employee.loginPin || DEFAULT_USER_PIN,
             qrToken: employee.qrToken || '',
             status: employee.status,
@@ -2721,7 +3003,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       return employee;
     },
-    [ownerUid, cloudConnected, workspace.employees, workspace.projects, workspace.towers]
+    [ownerUid, cloudConnected, workspace.employees, workspace.projects, workspace.towers, session, upsertCloudQrPass]
   );
 
   const updateEmployee = useCallback(
@@ -2746,14 +3028,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               bloodGroup: patch.bloodGroup ?? existing.bloodGroup,
               emergencyContact: patch.emergencyContact ?? existing.emergencyContact,
               photoDataUrl: patch.photoDataUrl ?? existing.photoDataUrl,
+              skillTags: patch.skillTags !== undefined ? normalizeSkillTags(patch.skillTags) : existing.skillTags,
               status: patch.status ?? existing.status,
               notes: patch.notes ?? existing.notes,
             }
-          : patch;
+          : {
+              ...patch,
+              ...(patch.skillTags !== undefined ? { skillTags: normalizeSkillTags(patch.skillTags) } : {}),
+            };
 
       const updated: Employee = {
         ...existing,
         ...sanitizedPatch,
+        skillTags: normalizeSkillTags(sanitizedPatch.skillTags ?? existing.skillTags),
         empCode: existing.empCode,
         ownerId: existing.ownerId,
         updatedAt: nowIso,
@@ -2784,6 +3071,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             assignedTowerIds: Array.isArray(updated.assignedTowerIds)
               ? updated.assignedTowerIds.slice(0, 30)
               : [],
+            skillTags: updated.skillTags || [],
             loginPin: clampString(updated.loginPin || DEFAULT_USER_PIN, 24),
             qrToken: clampString(updated.qrToken, 48),
             status: updated.status,
@@ -2803,7 +3091,239 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }));
       }
     },
-    [cloudConnected, workspace.employees, session]
+    [cloudConnected, workspace.employees, session, upsertCloudQrPass]
+  );
+
+  const removeEmployeeWithBackup = useCallback(
+    async (input: {
+      employeeId: string;
+      removalReason?: string;
+    }): Promise<RemovedEmployeeBackup> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can remove employees from Workforce & IDs.');
+      }
+      const emp = workspace.employees.find((e) => e.id === input.employeeId);
+      if (!emp) {
+        throw new Error('Employee record was not found.');
+      }
+
+      const rawBackup = buildRemovedEmployeeBackup({
+        employee: emp,
+        ownerId: ownerUid,
+        removedByName: session?.displayName || 'Admin',
+        removalReason: input.removalReason,
+        employeeDocuments: workspace.employeeDocuments,
+        attendance: workspace.attendance,
+        advances: workspace.advances,
+        settlements: workspace.settlements,
+        deployments: workspace.deployments,
+        assignments: workspace.assignments,
+      });
+
+      if (cloudConnected) {
+        const { cloudDocuments, archivedDocIds } = trimEmployeeBackupDocumentsForCloud(
+          rawBackup.documents
+        );
+        const cloudBackup: RemovedEmployeeBackup = {
+          ...rawBackup,
+          documents: cloudDocuments,
+        };
+        try {
+          await setDoc(doc(db, 'employee_backups', cloudBackup.id), {
+            ownerId: ownerUid,
+            employeeId: cloudBackup.employeeId,
+            empCode: clampString(cloudBackup.empCode, 32) || 'EMP',
+            fullName: clampString(cloudBackup.fullName, 100) || 'Worker',
+            role: cloudBackup.role,
+            phone: clampString(cloudBackup.phone, 24) || 'N/A',
+            joiningDate:
+              cloudBackup.joiningDate && cloudBackup.joiningDate.length >= 8
+                ? clampString(cloudBackup.joiningDate, 24)
+                : getTodayIso(),
+            removedAt: cloudBackup.removedAt,
+            removedByName: clampString(cloudBackup.removedByName, 100) || 'Admin',
+            removalReason: clampString(cloudBackup.removalReason, 300),
+            employeeSnapshot: stripUndefinedDeep(cloudBackup.employeeSnapshot),
+            documents: stripUndefinedDeep(cloudDocuments),
+            summary: stripUndefinedDeep(cloudBackup.summary),
+            ...tsCreate(),
+          });
+
+          await deleteDoc(doc(db, 'employees', emp.id));
+
+          if (emp.qrToken && emp.qrToken.length >= 16) {
+            try {
+              await deleteDoc(doc(db, 'qr_passes', emp.qrToken));
+            } catch {
+              // Non-blocking if QR pass doc was never created
+            }
+          }
+
+          for (const docId of archivedDocIds) {
+            try {
+              await deleteDoc(doc(db, 'employee_docs', docId));
+            } catch {
+              // Non-blocking cleanup for archived docs
+            }
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `employee_backups/${cloudBackup.id}`);
+        }
+        return cloudBackup;
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          removedEmployees: [rawBackup, ...(prev.removedEmployees || [])],
+          employees: prev.employees.filter((e) => e.id !== emp.id),
+          employeeDocuments: prev.employeeDocuments.filter((d) => d.employeeId !== emp.id),
+        }));
+        return rawBackup;
+      }
+    },
+    [
+      session,
+      workspace.employees,
+      workspace.employeeDocuments,
+      workspace.attendance,
+      workspace.advances,
+      workspace.settlements,
+      workspace.deployments,
+      workspace.assignments,
+      ownerUid,
+      cloudConnected,
+    ]
+  );
+
+  const restoreEmployeeBackup = useCallback(
+    async (
+      backupOrId: string | RemovedEmployeeBackup
+    ): Promise<{ employee: Employee; codeReassigned: boolean }> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can restore backed-up employees.');
+      }
+      const backup =
+        typeof backupOrId === 'string'
+          ? (workspace.removedEmployees || []).find((b) => b.id === backupOrId)
+          : backupOrId;
+      if (!backup) {
+        throw new Error('Backed-up worker record was not found.');
+      }
+
+      const { employee, documentsToRestore, codeReassigned } = prepareEmployeeRestorePayload({
+        backup,
+        existingEmployees: workspace.employees,
+        existingDocuments: workspace.employeeDocuments,
+        projects: workspace.projects,
+        towers: workspace.towers,
+        ownerId: ownerUid,
+      });
+
+      const isStoredBackup = (workspace.removedEmployees || []).some((b) => b.id === backup.id);
+
+      if (cloudConnected) {
+        try {
+          await setDoc(doc(db, 'employees', employee.id), {
+            ownerId: ownerUid,
+            empCode: clampString(employee.empCode, 32),
+            fullName: clampString(employee.fullName, 100),
+            role: employee.role,
+            phone: clampString(employee.phone, 24) || '9000000000',
+            alternatePhone: clampString(employee.alternatePhone, 24),
+            email: clampString(employee.email, 120),
+            joiningDate: clampString(employee.joiningDate, 24) || getTodayIso(),
+            dailyRate: Number(employee.dailyRate) || 0,
+            overtimeRate: Number(employee.overtimeRate) || 0,
+            foodAllowanceDaily: Number(employee.foodAllowanceDaily) || 0,
+            aadharRef: clampString(employee.aadharRef, 40),
+            pfNumber: clampString(employee.pfNumber, 60),
+            esiNumber: clampString(employee.esiNumber, 60),
+            bloodGroup: clampString(employee.bloodGroup, 12),
+            emergencyContact: clampString(employee.emergencyContact, 120),
+            photoDataUrl: (employee.photoDataUrl || '').slice(0, 120000),
+            currentProjectId: clampString(employee.currentProjectId, 128),
+            currentProjectName: clampString(employee.currentProjectName, 120),
+            currentTowerId: clampString(employee.currentTowerId, 128),
+            currentTowerName: clampString(employee.currentTowerName, 80),
+            assignedTowerIds: Array.isArray(employee.assignedTowerIds)
+              ? employee.assignedTowerIds.slice(0, 30)
+              : [],
+            skillTags: normalizeSkillTags(employee.skillTags),
+            loginPin: clampString(employee.loginPin || DEFAULT_USER_PIN, 24),
+            qrToken: clampString(employee.qrToken, 48),
+            status: 'active',
+            notes: clampString(employee.notes, 400),
+            ...tsCreate(),
+          });
+
+          if (employee.qrToken && employee.qrToken.length >= 16) {
+            await upsertCloudQrPass(employee, employee.qrToken);
+          }
+
+          for (const d of documentsToRestore) {
+            await setDoc(doc(db, 'employee_docs', d.id), {
+              ownerId: ownerUid,
+              employeeId: employee.id,
+              docCategory: d.docCategory,
+              title: clampString(d.title, 100) || 'Document',
+              fileName: clampString(d.fileName, 160) || 'document.pdf',
+              mimeType: clampString(d.mimeType, 80) || 'application/pdf',
+              sizeBytes: Math.max(1, Number(d.sizeBytes) || 1),
+              dataUrl: d.dataUrl,
+              ...tsCreate(),
+            });
+          }
+
+          if (isStoredBackup) {
+            await deleteDoc(doc(db, 'employee_backups', backup.id));
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `employees/${employee.id}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          employees: [...prev.employees, employee],
+          employeeDocuments: [...documentsToRestore, ...prev.employeeDocuments],
+          removedEmployees: isStoredBackup
+            ? (prev.removedEmployees || []).filter((b) => b.id !== backup.id)
+            : prev.removedEmployees || [],
+        }));
+      }
+
+      return { employee, codeReassigned };
+    },
+    [
+      session,
+      workspace.removedEmployees,
+      workspace.employees,
+      workspace.employeeDocuments,
+      workspace.projects,
+      workspace.towers,
+      ownerUid,
+      cloudConnected,
+      upsertCloudQrPass,
+    ]
+  );
+
+  const deleteEmployeeBackupPermanently = useCallback(
+    async (backupId: string): Promise<void> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can permanently delete worker backups.');
+      }
+      if (cloudConnected) {
+        try {
+          await deleteDoc(doc(db, 'employee_backups', backupId));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, `employee_backups/${backupId}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          removedEmployees: (prev.removedEmployees || []).filter((b) => b.id !== backupId),
+        }));
+      }
+    },
+    [cloudConnected, session]
   );
 
   const addEmployeeDocument = useCallback(
@@ -3017,6 +3537,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       projectId: string;
       towerId?: string;
       status: AttendanceStatus;
+      inTime?: string;
+      outTime?: string;
       overtimeHours: number;
       notes?: string;
       isExplicitEdit?: boolean;
@@ -3063,6 +3585,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         input.overtimeHours
       );
 
+      const resolvedInTime =
+        input.status === 'absent'
+          ? ''
+          : input.inTime !== undefined
+            ? normalizeHHMM(input.inTime)
+            : normalizeHHMM(existing?.inTime) || getCurrentHHMM();
+      const resolvedOutTime =
+        input.status === 'absent'
+          ? ''
+          : input.outTime !== undefined
+            ? normalizeHHMM(input.outTime)
+            : normalizeHHMM(existing?.outTime) || '';
+
       const nowIso = new Date().toISOString();
       const docId = existing
         ? existing.id
@@ -3085,6 +3620,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         towerId: tower?.id || '',
         towerName: tower?.name || '',
         status: input.status,
+        ...(resolvedInTime ? { inTime: resolvedInTime } : {}),
+        ...(resolvedOutTime ? { outTime: resolvedOutTime } : {}),
         overtimeHours: Number(input.overtimeHours) || 0,
         dailyWageEarned,
         overtimePayEarned,
@@ -3105,6 +3642,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           if (existing) {
             await updateDoc(doc(db, 'attendance', docId), {
               status: record.status,
+              inTime: resolvedInTime,
+              outTime: resolvedOutTime,
               overtimeHours: record.overtimeHours,
               dailyWageEarned: record.dailyWageEarned,
               overtimePayEarned: record.overtimePayEarned,
@@ -3133,6 +3672,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               towerId: record.towerId || '',
               towerName: record.towerName || '',
               status: record.status,
+              ...(resolvedInTime ? { inTime: resolvedInTime } : {}),
+              ...(resolvedOutTime ? { outTime: resolvedOutTime } : {}),
               overtimeHours: record.overtimeHours,
               dailyWageEarned: record.dailyWageEarned,
               overtimePayEarned: record.overtimePayEarned,
@@ -3183,6 +3724,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       projectId: string;
       towerId?: string;
       status: AttendanceStatus;
+      inTime?: string;
+      outTime?: string;
       overtimeHours: number;
       notes?: string;
     }): Promise<void> => {
@@ -3201,6 +3744,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       projectId: string;
       towerId?: string;
       status: AttendanceStatus;
+      inTime?: string;
+      outTime?: string;
       overtimeHours: number;
       notes?: string;
       editReason: string;
@@ -3212,6 +3757,75 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
     },
     [saveAttendanceRecordInternal]
+  );
+
+  const punchAttendanceOut = useCallback(
+    async (input: {
+      attendanceId?: string;
+      employeeId?: string;
+      date: string;
+      outTime?: string;
+      overtimeHours?: number;
+    }): Promise<void> => {
+      if (session?.role === 'employee') {
+        throw new Error('Employee login is read-only.');
+      }
+      const existing = workspace.attendance.find(
+        (a) =>
+          (input.attendanceId && a.id === input.attendanceId) ||
+          (input.employeeId && a.employeeId === input.employeeId && a.date === input.date)
+      );
+      if (!existing) {
+        throw new Error(`No check-in attendance record found for ${input.date}. Please check in first.`);
+      }
+      if (existing.status === 'absent') {
+        throw new Error(`${existing.employeeName} is marked Absent and cannot be checked out.`);
+      }
+      const employee = workspace.employees.find((e) => e.id === existing.employeeId);
+      if (session?.role === 'supervisor' && employee && !canSupervisorUpdateEmployee(session, employee)) {
+        throw new Error('Supervisors can only check out crew in their assigned tower(s).');
+      }
+
+      const resolvedOutTime = normalizeHHMM(input.outTime) || getCurrentHHMM();
+      const nextOtHours =
+        input.overtimeHours !== undefined
+          ? Math.max(0, Math.min(24, Number(input.overtimeHours) || 0))
+          : existing.overtimeHours;
+      const wageUpdate = employee
+        ? computeDailyWage(employee.dailyRate, employee.overtimeRate, existing.status, nextOtHours)
+        : {
+            dailyWageEarned: existing.dailyWageEarned,
+            overtimePayEarned: existing.overtimePayEarned,
+          };
+
+      const nowIso = new Date().toISOString();
+      const updatedRecord: AttendanceRecord = {
+        ...existing,
+        outTime: resolvedOutTime,
+        overtimeHours: nextOtHours,
+        overtimePayEarned: wageUpdate.overtimePayEarned,
+        updatedAt: nowIso,
+      };
+
+      if (cloudConnected) {
+        try {
+          await updateDoc(doc(db, 'attendance', existing.id), {
+            outTime: resolvedOutTime,
+            overtimeHours: nextOtHours,
+            overtimePayEarned: wageUpdate.overtimePayEarned,
+            ...tsUpdate(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `attendance/${existing.id}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          attendance: prev.attendance.map((a) => (a.id === existing.id ? updatedRecord : a)),
+        }));
+      }
+    },
+    [cloudConnected, session, workspace.attendance, workspace.employees]
   );
 
   const deleteAttendanceRecord = useCallback(
@@ -3260,7 +3874,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const bulkMarkAttendancePresent = useCallback(
-    async (date: string, projectId: string, towerId?: string): Promise<void> => {
+    async (
+      date: string,
+      projectId: string,
+      towerId?: string,
+      inTime?: string
+    ): Promise<void> => {
       const scoped = workspace.employees.filter((e) => {
         if (e.status !== 'active') return false;
         if (session?.role === 'supervisor' && !canSupervisorUpdateEmployee(session, e)) {
@@ -3270,6 +3889,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (towerId && towerId !== 'all' && e.currentTowerId !== towerId) return false;
         return true;
       });
+      const resolvedIn = normalizeHHMM(inTime) || getCurrentHHMM();
       for (const emp of scoped) {
         const existing = workspace.attendance.find(
           (a) => a.date === date && a.employeeId === emp.id
@@ -3281,6 +3901,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             projectId: projectId === 'all' ? emp.currentProjectId || '' : projectId,
             towerId: towerId && towerId !== 'all' ? towerId : emp.currentTowerId,
             status: 'present',
+            inTime: resolvedIn,
             overtimeHours: 0,
             notes: '',
           });
@@ -3306,6 +3927,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       towerId?: string;
       isSundayRun?: boolean;
       notes?: string;
+      approvalStatus?: AdvanceApprovalStatus;
+      approvalBatchId?: string;
+      submittedByName?: string;
+      submittedByRole?: 'admin' | 'supervisor';
     }): Promise<{ advance: AdvanceEntry; whatsappMessage: string; updatedNetBalance: number }> => {
       if (session?.role === 'employee') {
         throw new Error('Employee login is read-only.');
@@ -3332,6 +3957,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         input.proofImageDataUrl && input.proofImageDataUrl.startsWith('data:image/')
           ? input.proofImageDataUrl.slice(0, 240000)
           : '';
+
+      const cleanBatchId = clampString(input.approvalBatchId, 80);
+      const cleanSubmittedByName = clampString(
+        input.submittedByName || session?.displayName || 'Site Supervisor',
+        100
+      );
+      const cleanSubmittedByRole: 'admin' | 'supervisor' =
+        input.submittedByRole || (session?.role === 'supervisor' ? 'supervisor' : 'admin');
+      const resolvedApprovalStatus: AdvanceApprovalStatus =
+        input.approvalStatus ||
+        (input.advanceType === 'weekly_food' && session?.role === 'supervisor'
+          ? 'pending_admin'
+          : 'approved');
 
       const nowIso = new Date().toISOString();
       const id = sanitizeId(`adv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
@@ -3360,6 +3998,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         whatsappShared: false,
         acknowledged: false,
         followUpCount: 0,
+        approvalStatus: resolvedApprovalStatus,
+        ...(cleanBatchId ? { approvalBatchId: cleanBatchId } : {}),
+        submittedByName: cleanSubmittedByName,
+        submittedByRole: cleanSubmittedByRole,
+        ...(resolvedApprovalStatus === 'approved' && session?.role === 'admin'
+          ? {
+              approvedByName: clampString(
+                workspace.companyProfile?.signatoryName || session.displayName || 'Admin',
+                100
+              ),
+              approvedAt: nowIso,
+            }
+          : {}),
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -3374,7 +4025,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const whatsappMessage = formatAdvanceWhatsappMessage(
         advance,
         payrollAfter.netPayable,
-        workspace.companyProfile?.companyName || 'AVY INFRA'
+        workspace.companyProfile?.companyName || 'AVY INFRA',
+        { hideNetBalance: !canViewEmployeeFixedSalary(session) }
       );
 
       if (cloudConnected) {
@@ -3403,6 +4055,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             whatsappShared: false,
             acknowledged: false,
             followUpCount: 0,
+            approvalStatus: resolvedApprovalStatus,
+            ...(cleanBatchId ? { approvalBatchId: cleanBatchId } : {}),
+            submittedByName: cleanSubmittedByName,
+            submittedByRole: cleanSubmittedByRole,
+            ...(advance.approvedByName ? { approvedByName: advance.approvedByName } : {}),
+            ...(advance.approvedAt ? { approvedAt: advance.approvedAt } : {}),
             ...tsCreate(),
           });
         } catch (err) {
@@ -3468,7 +4126,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       entries: { employeeId: string; amount: number }[];
       paymentMode: PaymentMode;
       notes?: string;
+      approvalStatus?: AdvanceApprovalStatus;
+      approvalBatchId?: string;
     }): Promise<AdvanceEntry[]> => {
+      const batchId =
+        clampString(input.approvalBatchId, 80) ||
+        sanitizeId(`wfood_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`);
+      const statusToApply: AdvanceApprovalStatus = input.approvalStatus || 'pending_admin';
       const created: AdvanceEntry[] = [];
       for (const item of input.entries) {
         if (item.amount <= 0) continue;
@@ -3482,12 +4146,73 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           towerId: input.towerId,
           isSundayRun: true,
           notes: input.notes || 'Sunday weekly food advance',
+          approvalStatus: statusToApply,
+          approvalBatchId: batchId,
         });
         created.push(res.advance);
       }
       return created;
     },
     [addAdvance]
+  );
+
+  const reviewWeeklyFoodApproval = useCallback(
+    async (input: {
+      advanceIds: string[];
+      decision: 'approved' | 'rejected';
+      note?: string;
+    }): Promise<void> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can approve or reject weekly food runs.');
+      }
+      const idSet = new Set(input.advanceIds.filter(Boolean));
+      if (idSet.size === 0) return;
+
+      const nowIso = new Date().toISOString();
+      const approverName = clampString(
+        workspace.companyProfile?.signatoryName || session?.displayName || 'AVY INFRA Admin',
+        100
+      );
+      const cleanNote = clampString(input.note, 300);
+
+      if (cloudConnected) {
+        try {
+          const ids = Array.from(idSet);
+          for (let i = 0; i < ids.length; i += 400) {
+            const batch = writeBatch(db);
+            for (const advId of ids.slice(i, i + 400)) {
+              batch.update(doc(db, 'advances', advId), {
+                approvalStatus: input.decision,
+                approvedByName: approverName,
+                approvedAt: nowIso,
+                ...(cleanNote ? { approvalNote: cleanNote } : {}),
+                ...tsUpdate(),
+              });
+            }
+            await batch.commit();
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, 'advances');
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          advances: prev.advances.map((a) =>
+            idSet.has(a.id)
+              ? {
+                  ...a,
+                  approvalStatus: input.decision,
+                  approvedByName: approverName,
+                  approvedAt: nowIso,
+                  ...(cleanNote ? { approvalNote: cleanNote } : {}),
+                  updatedAt: nowIso,
+                }
+              : a
+          ),
+        }));
+      }
+    },
+    [cloudConnected, session, workspace.companyProfile]
   );
 
   const markAdvanceWhatsappShared = useCallback(
@@ -3640,6 +4365,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       upiId?: string;
       proofImageDataUrl?: string;
       notes?: string;
+      toolItemsSummary?: string;
+      billReceiptNumber?: string;
     }): Promise<SiteExpense> => {
       if (session?.role === 'employee') {
         throw new Error('Employee login is read-only.');
@@ -3665,6 +4392,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         input.proofImageDataUrl && input.proofImageDataUrl.startsWith('data:image/')
           ? input.proofImageDataUrl.slice(0, 240000)
           : '';
+      const recordedByRole: 'admin' | 'supervisor' =
+        session?.role === 'supervisor' ? 'supervisor' : 'admin';
+      const recordedByName = clampString(session?.displayName || 'AVY INFRA Admin', 100);
+      const recordedByEmployeeId = session?.employeeId || '';
+      const toolItemsSummary = clampString(input.toolItemsSummary, 200);
+      const billReceiptNumber = clampString(input.billReceiptNumber, 80);
+      const reimbursementStatus: 'pending_admin' | 'approved' | 'reimbursed' =
+        recordedByRole === 'supervisor' ? 'pending_admin' : 'approved';
 
       const nowIso = new Date().toISOString();
       const id = sanitizeId(`exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
@@ -3687,6 +4422,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         ...(cleanUpiId ? { upiId: cleanUpiId } : {}),
         ...(cleanProofUrl ? { proofImageDataUrl: cleanProofUrl } : {}),
         notes: clampString(input.notes, 300),
+        recordedByRole,
+        recordedByName,
+        ...(recordedByEmployeeId ? { recordedByEmployeeId } : {}),
+        ...(toolItemsSummary ? { toolItemsSummary } : {}),
+        ...(billReceiptNumber ? { billReceiptNumber } : {}),
+        reimbursementStatus,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -3711,6 +4452,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ...(cleanUpiId ? { upiId: cleanUpiId } : {}),
             ...(cleanProofUrl ? { proofImageDataUrl: cleanProofUrl } : {}),
             notes: expense.notes,
+            recordedByRole,
+            recordedByName,
+            ...(recordedByEmployeeId ? { recordedByEmployeeId } : {}),
+            ...(toolItemsSummary ? { toolItemsSummary } : {}),
+            ...(billReceiptNumber ? { billReceiptNumber } : {}),
+            reimbursementStatus,
             ...tsCreate(),
           });
         } catch (err) {
@@ -3726,6 +4473,33 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return expense;
     },
     [ownerUid, cloudConnected, workspace.projects, workspace.towers, session]
+  );
+
+  const reviewSupervisorExpense = useCallback(
+    async (expenseId: string, status: 'approved' | 'reimbursed'): Promise<void> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can approve or mark supervisor tool expenses as reimbursed.');
+      }
+      const nowIso = new Date().toISOString();
+      if (cloudConnected) {
+        try {
+          await updateDoc(doc(db, 'expenses', expenseId), {
+            reimbursementStatus: status,
+            ...tsUpdate(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `expenses/${expenseId}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          expenses: prev.expenses.map((e) =>
+            e.id === expenseId ? { ...e, reimbursementStatus: status, updatedAt: nowIso } : e
+          ),
+        }));
+      }
+    },
+    [cloudConnected, session]
   );
 
   const deleteExpense = useCallback(
@@ -3846,6 +4620,86 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return settlement;
     },
     [ownerUid, cloudConnected, workspace.employees, workspace.attendance, workspace.advances, workspace.settlements, session]
+  );
+
+  const updateAdvance = useCallback(
+    async (
+      advanceId: string,
+      patch: Partial<{
+        date: string;
+        advanceType: AdvanceType;
+        customCategory: string;
+        amount: number;
+        paymentMode: PaymentMode;
+        paymentApp: string;
+        transactionId: string;
+        upiId: string;
+        notes: string;
+      }>
+    ): Promise<void> => {
+      if (session && session.role !== 'admin') {
+        throw new Error('Only Admin can edit advance entries.');
+      }
+      const existing = workspace.advances.find((a) => a.id === advanceId);
+      if (!existing) throw new Error('Advance entry not found.');
+
+      const nextDate = clampString(patch.date ?? existing.date, 24) || existing.date;
+      const nextType = patch.advanceType ?? existing.advanceType;
+      const nextCustomCategory =
+        nextType === 'custom'
+          ? clampString(patch.customCategory ?? existing.customCategory, 60)
+          : '';
+      const nextAmount = Math.max(1, Number(patch.amount ?? existing.amount) || 1);
+      const nextPaymentMode = patch.paymentMode ?? existing.paymentMode;
+      const nextPaymentApp = clampString(patch.paymentApp ?? existing.paymentApp, 40);
+      const nextTxnId = clampString(patch.transactionId ?? existing.transactionId, 100);
+      const nextUpiId = clampString(patch.upiId ?? existing.upiId, 120);
+      const nextNotes = clampString(patch.notes ?? existing.notes, 300);
+      const nextSundayRun =
+        nextType === 'weekly_food' && (existing.isSundayRun || isSundayDate(nextDate));
+      const nowIso = new Date().toISOString();
+
+      const updated: AdvanceEntry = {
+        ...existing,
+        date: nextDate,
+        advanceType: nextType,
+        customCategory: nextCustomCategory,
+        amount: nextAmount,
+        paymentMode: nextPaymentMode,
+        paymentApp: nextPaymentApp,
+        transactionId: nextTxnId,
+        upiId: nextUpiId,
+        notes: nextNotes,
+        isSundayRun: nextSundayRun,
+        updatedAt: nowIso,
+      };
+
+      if (cloudConnected) {
+        try {
+          await updateDoc(doc(db, 'advances', advanceId), {
+            date: nextDate,
+            advanceType: nextType,
+            customCategory: nextCustomCategory,
+            amount: nextAmount,
+            paymentMode: nextPaymentMode,
+            paymentApp: nextPaymentApp,
+            transactionId: nextTxnId,
+            upiId: nextUpiId,
+            notes: nextNotes,
+            isSundayRun: nextSundayRun,
+            ...tsUpdate(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `advances/${advanceId}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          advances: prev.advances.map((a) => (a.id === advanceId ? updated : a)),
+        }));
+      }
+    },
+    [cloudConnected, session, workspace.advances]
   );
 
   const deleteAdvance = useCallback(
@@ -3999,6 +4853,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       status?: BillingDocStatus;
       notes?: string;
       terms?: string;
+      useCustomLetterhead?: boolean;
+      hideDefaultHeader?: boolean;
+      letterheadBgDataUrl?: string;
+      letterheadBgOpacity?: number;
     }): Promise<BillingDocument> => {
       if (session?.role === 'employee') {
         throw new Error('Employee login is read-only.');
@@ -4024,6 +4882,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         status === 'paid'
           ? totals.grandTotal
           : Math.max(0, Math.min(totals.grandTotal, Number(input.amountPaid) || 0));
+
+      const useCustomLetterhead = Boolean(input.useCustomLetterhead);
+      const hideDefaultHeader = Boolean(input.hideDefaultHeader);
+      const cleanLetterheadBg = (input.letterheadBgDataUrl || '').slice(0, 240000);
+      const cleanLetterheadOpacity =
+        typeof input.letterheadBgOpacity === 'number' && Number.isFinite(input.letterheadBgOpacity)
+          ? Math.max(0, Math.min(1, input.letterheadBgOpacity))
+          : 0.14;
 
       const nowIso = new Date().toISOString();
       const id = sanitizeId(`bill_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
@@ -4057,6 +4923,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         notes: clampString(input.notes, 500),
         terms: clampString(input.terms ?? DEFAULT_BILLING_TERMS, 800),
         whatsappShared: false,
+        useCustomLetterhead,
+        hideDefaultHeader,
+        letterheadBgDataUrl: cleanLetterheadBg,
+        letterheadBgOpacity: cleanLetterheadOpacity,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -4092,6 +4962,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             notes: docRecord.notes || '',
             terms: docRecord.terms || '',
             whatsappShared: docRecord.whatsappShared,
+            useCustomLetterhead,
+            hideDefaultHeader,
+            letterheadBgDataUrl: cleanLetterheadBg,
+            letterheadBgOpacity: cleanLetterheadOpacity,
             ...tsCreate(),
           });
         } catch (err) {
@@ -4139,6 +5013,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         notes: string;
         terms: string;
         whatsappShared: boolean;
+        useCustomLetterhead: boolean;
+        hideDefaultHeader: boolean;
+        letterheadBgDataUrl: string;
+        letterheadBgOpacity: number;
       }>
     ): Promise<void> => {
       if (session?.role === 'employee') {
@@ -4167,6 +5045,27 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         nextStatus === 'paid'
           ? totals.grandTotal
           : Math.max(0, Math.min(totals.grandTotal, Number(rawPaid) || 0));
+
+      const nextUseCustomLetterhead =
+        patch.useCustomLetterhead !== undefined
+          ? patch.useCustomLetterhead
+          : Boolean(existing.useCustomLetterhead);
+      const nextHideDefaultHeader =
+        patch.hideDefaultHeader !== undefined
+          ? patch.hideDefaultHeader
+          : Boolean(existing.hideDefaultHeader);
+      const nextLetterheadBg =
+        patch.letterheadBgDataUrl !== undefined
+          ? patch.letterheadBgDataUrl.slice(0, 240000)
+          : (existing.letterheadBgDataUrl || '').slice(0, 240000);
+      const rawOpacity =
+        patch.letterheadBgOpacity !== undefined
+          ? patch.letterheadBgOpacity
+          : existing.letterheadBgOpacity;
+      const nextLetterheadOpacity =
+        typeof rawOpacity === 'number' && Number.isFinite(rawOpacity)
+          ? Math.max(0, Math.min(1, rawOpacity))
+          : 0.14;
 
       const nowIso = new Date().toISOString();
       const updatedDoc: BillingDocument = {
@@ -4198,6 +5097,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         notes: clampString(patch.notes ?? existing.notes, 500),
         terms: clampString(patch.terms ?? existing.terms, 800),
         whatsappShared: patch.whatsappShared ?? existing.whatsappShared,
+        useCustomLetterhead: nextUseCustomLetterhead,
+        hideDefaultHeader: nextHideDefaultHeader,
+        letterheadBgDataUrl: nextLetterheadBg,
+        letterheadBgOpacity: nextLetterheadOpacity,
         updatedAt: nowIso,
       };
 
@@ -4231,6 +5134,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             notes: updatedDoc.notes || '',
             terms: updatedDoc.terms || '',
             whatsappShared: updatedDoc.whatsappShared,
+            useCustomLetterhead: nextUseCustomLetterhead,
+            hideDefaultHeader: nextHideDefaultHeader,
+            letterheadBgDataUrl: nextLetterheadBg,
+            letterheadBgOpacity: nextLetterheadOpacity,
             ...tsUpdate(),
           });
         } catch (err) {
@@ -4282,6 +5189,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         status: 'issued',
         notes: `Converted from ${source.docNumber}. ${source.notes || ''}`.trim(),
         terms: source.terms,
+        useCustomLetterhead: source.useCustomLetterhead,
+        hideDefaultHeader: source.hideDefaultHeader,
+        letterheadBgDataUrl: source.letterheadBgDataUrl,
+        letterheadBgOpacity: source.letterheadBgOpacity,
       });
     },
     [workspace.billingDocuments, addBillingDocument]
@@ -4534,6 +5445,160 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [cloudConnected, session]
   );
 
+  const sendTeamMessage = useCallback(
+    async (input: {
+      threadId: string;
+      channelType: TeamMessageChannelType;
+      body: string;
+      projectId?: string;
+      towerId?: string;
+      towerName?: string;
+      recipientId?: string;
+      recipientName?: string;
+      recipientRole?: TeamMessageActorRole;
+      attachmentName?: string;
+      attachmentMimeType?: string;
+      attachmentDataUrl?: string;
+    }): Promise<TeamMessage> => {
+      if (!session) throw new Error('Login required to send messages.');
+      const cleanAttName = clampString(input.attachmentName, 180);
+      const cleanAttMime = clampString(input.attachmentMimeType, 120);
+      const cleanAttData =
+        input.attachmentDataUrl && input.attachmentDataUrl.startsWith('data:')
+          ? input.attachmentDataUrl.slice(0, 340000)
+          : '';
+      const rawBody = clampString(input.body, 1200);
+      const cleanBody =
+        rawBody || (cleanAttData ? clampString(`Attachment: ${cleanAttName || 'File'}`, 1200) : '');
+      if (!cleanBody) throw new Error('Message text or attachment is required.');
+
+      const senderId =
+        session.role === 'admin' ? ADMIN_ACTOR_ID : session.employeeId || ADMIN_ACTOR_ID;
+      const senderName = clampString(
+        session.role === 'admin'
+          ? workspace.companyProfile?.signatoryName || session.displayName || 'AVY INFRA Admin'
+          : session.displayName,
+        100
+      );
+      const senderRole: TeamMessageActorRole = session.role;
+      const nowIso = new Date().toISOString();
+      const id = sanitizeId(`tmsg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+
+      const msg: TeamMessage = {
+        id,
+        ownerId: ownerUid,
+        threadId: clampString(input.threadId, 160),
+        channelType: input.channelType,
+        ...(input.projectId ? { projectId: clampString(input.projectId, 128) } : {}),
+        ...(input.towerId ? { towerId: clampString(input.towerId, 128) } : {}),
+        ...(input.towerName ? { towerName: clampString(input.towerName, 80) } : {}),
+        senderId,
+        senderName,
+        senderRole,
+        ...(input.recipientId ? { recipientId: clampString(input.recipientId, 128) } : {}),
+        ...(input.recipientName ? { recipientName: clampString(input.recipientName, 100) } : {}),
+        ...(input.recipientRole ? { recipientRole: input.recipientRole } : {}),
+        body: cleanBody,
+        ...(cleanAttData
+          ? {
+              attachmentName: cleanAttName || 'attachment',
+              attachmentMimeType: cleanAttMime || 'application/octet-stream',
+              attachmentDataUrl: cleanAttData,
+            }
+          : {}),
+        readByIds: [senderId],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      if (cloudConnected) {
+        try {
+          await setDoc(doc(db, 'team_messages', id), {
+            ownerId: ownerUid,
+            threadId: msg.threadId,
+            channelType: msg.channelType,
+            ...(msg.projectId ? { projectId: msg.projectId } : {}),
+            ...(msg.towerId ? { towerId: msg.towerId } : {}),
+            ...(msg.towerName ? { towerName: msg.towerName } : {}),
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            senderRole: msg.senderRole,
+            ...(msg.recipientId ? { recipientId: msg.recipientId } : {}),
+            ...(msg.recipientName ? { recipientName: msg.recipientName } : {}),
+            ...(msg.recipientRole ? { recipientRole: msg.recipientRole } : {}),
+            body: msg.body,
+            ...(msg.attachmentDataUrl
+              ? {
+                  attachmentName: msg.attachmentName || 'attachment',
+                  attachmentMimeType: msg.attachmentMimeType || 'application/octet-stream',
+                  attachmentDataUrl: msg.attachmentDataUrl,
+                }
+              : {}),
+            readByIds: msg.readByIds,
+            ...tsCreate(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `team_messages/${id}`);
+        }
+      } else {
+        setWorkspace((prev) => ({
+          ...prev,
+          teamMessages: [...(prev.teamMessages || []), msg],
+        }));
+      }
+
+      return msg;
+    },
+    [cloudConnected, ownerUid, session, workspace.companyProfile]
+  );
+
+  const markTeamThreadRead = useCallback(
+    async (threadId: string): Promise<void> => {
+      if (!session) return;
+      const actorId =
+        session.role === 'admin' ? ADMIN_ACTOR_ID : session.employeeId || ADMIN_ACTOR_ID;
+      const unread = (workspace.teamMessages || []).filter(
+        (m) =>
+          m.threadId === threadId &&
+          m.senderId !== actorId &&
+          !(m.readByIds || []).includes(actorId)
+      );
+      if (unread.length === 0) return;
+
+      const nowIso = new Date().toISOString();
+      if (cloudConnected) {
+        try {
+          const batch = writeBatch(db);
+          for (const msg of unread.slice(0, 200)) {
+            const nextRead = Array.from(new Set([...(msg.readByIds || []), actorId])).slice(0, 200);
+            batch.update(doc(db, 'team_messages', msg.id), {
+              readByIds: nextRead,
+              ...tsUpdate(),
+            });
+          }
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, 'team_messages');
+        }
+      } else {
+        const unreadIds = new Set(unread.map((m) => m.id));
+        setWorkspace((prev) => ({
+          ...prev,
+          teamMessages: (prev.teamMessages || []).map((m) =>
+            unreadIds.has(m.id)
+              ? {
+                  ...m,
+                  readByIds: Array.from(new Set([...(m.readByIds || []), actorId])).slice(0, 200),
+                  updatedAt: nowIso,
+                }
+              : m
+          ),
+        }));
+      }
+    },
+    [cloudConnected, session, workspace.teamMessages]
+  );
+
   const value = useMemo<StoreContextValue>(
     () => ({
       ...workspace,
@@ -4565,8 +5630,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       removeTower,
       removeFlat,
       updateFlatZone,
+      rectifyFlatZoneIssue,
       addEmployee,
       updateEmployee,
+      removeEmployeeWithBackup,
+      restoreEmployeeBackup,
+      deleteEmployeeBackupPermanently,
       addEmployeeDocument,
       deleteEmployeeDocument,
       deployEmployeeToSite,
@@ -4576,17 +5645,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       completeAssignment,
       markAttendance,
       editLockedAttendance,
+      punchAttendanceOut,
       bulkMarkAttendancePresent,
       deleteAttendanceRecord,
       addAdvance,
       bulkAddAdvances,
       addSundayWeeklyFoodBatch,
+      reviewWeeklyFoodApproval,
       markAdvanceWhatsappShared,
       acknowledgeAdvance,
       recordAdvanceFollowUpSent,
       addExpense,
+      reviewSupervisorExpense,
       deleteExpense,
       recordSettlement,
+      updateAdvance,
       deleteAdvance,
       addDailySiteLog,
       deleteDailySiteLog,
@@ -4597,6 +5670,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       saveCompanyDocument,
       approveCompanyDocument,
       deleteCompanyDocument,
+      sendTeamMessage,
+      markTeamThreadRead,
     }),
     [
       workspace,
@@ -4628,8 +5703,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       removeTower,
       removeFlat,
       updateFlatZone,
+      rectifyFlatZoneIssue,
       addEmployee,
       updateEmployee,
+      removeEmployeeWithBackup,
+      restoreEmployeeBackup,
+      deleteEmployeeBackupPermanently,
       addEmployeeDocument,
       deleteEmployeeDocument,
       deployEmployeeToSite,
@@ -4639,17 +5718,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       completeAssignment,
       markAttendance,
       editLockedAttendance,
+      punchAttendanceOut,
       bulkMarkAttendancePresent,
       deleteAttendanceRecord,
       addAdvance,
       bulkAddAdvances,
       addSundayWeeklyFoodBatch,
+      reviewWeeklyFoodApproval,
       markAdvanceWhatsappShared,
       acknowledgeAdvance,
       recordAdvanceFollowUpSent,
       addExpense,
+      reviewSupervisorExpense,
       deleteExpense,
       recordSettlement,
+      updateAdvance,
       deleteAdvance,
       addDailySiteLog,
       deleteDailySiteLog,
@@ -4660,6 +5743,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       saveCompanyDocument,
       approveCompanyDocument,
       deleteCompanyDocument,
+      sendTeamMessage,
+      markTeamThreadRead,
     ]
   );
 

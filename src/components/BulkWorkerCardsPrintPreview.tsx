@@ -14,6 +14,7 @@ import {
   paginateBulkWorkerCards,
 } from '../utils/bulkWorkerCards';
 import { buildBulkWorkerProfileCardsPdfBlob, triggerBlobDownload } from '../utils/idCardPdf';
+import { canViewEmployeeFixedSalary } from '../utils/authAccess';
 import { PrintPreviewOverlay } from './PrintPreviewOverlay';
 import { PrintableBulkWorkerCardsSheet } from './PrintableBulkWorkerCardsSheet';
 
@@ -37,6 +38,7 @@ export function BulkWorkerCardsPrintPreview({
   selectedEmployees,
 }: BulkWorkerCardsPrintPreviewProps) {
   const {
+    session,
     companyProfile,
     projects,
     towers,
@@ -48,11 +50,13 @@ export function BulkWorkerCardsPrintPreview({
     ensureEmployeeQrPass,
   } = useStore();
 
+  const hideSalary = !canViewEmployeeFixedSalary(session);
   const [paperSize, setPaperSize] = useState<BulkPaperSize>('a4');
   const [layout, setLayout] = useState<BulkCardLayout>('profile_attendance_2up');
   const [yearMonth, setYearMonth] = useState<string>(() => getTodayIso().slice(0, 7));
   const [showCutMarks, setShowCutMarks] = useState(true);
   const [showWageSummary, setShowWageSummary] = useState(true);
+  const effectiveShowWageSummary = !hideSalary && showWageSummary;
   const [qrUrlMap, setQrUrlMap] = useState<Record<string, string>>({});
   const [busyPdf, setBusyPdf] = useState(false);
 
@@ -139,7 +143,7 @@ export function BulkWorkerCardsPrintPreview({
         layout,
         monthLabel,
         showCutMarks,
-        showWageSummary,
+        showWageSummary: effectiveShowWageSummary,
       });
       triggerBlobDownload(blob, fileName);
     } finally {
@@ -241,16 +245,18 @@ export function BulkWorkerCardsPrintPreview({
           <span className="text-[11px]">Cut Guides</span>
         </label>
 
-        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showWageSummary}
-            onChange={(e) => setShowWageSummary(e.target.checked)}
-            className="rounded border-slate-600 text-orange-600"
-          />
-          <Wallet className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-          <span className="text-[11px]">Wages &amp; Net Bal</span>
-        </label>
+        {!hideSalary && (
+          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showWageSummary}
+              onChange={(e) => setShowWageSummary(e.target.checked)}
+              className="rounded border-slate-600 text-orange-600"
+            />
+            <Wallet className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+            <span className="text-[11px]">Wages &amp; Net Bal</span>
+          </label>
+        )}
 
         <span
           data-testid="bulk-pagination-summary"
@@ -282,7 +288,7 @@ export function BulkWorkerCardsPrintPreview({
           layout={layout}
           monthLabel={monthLabel}
           showCutMarks={showCutMarks}
-          showWageSummary={showWageSummary}
+          showWageSummary={effectiveShowWageSummary}
         />
       )}
     />

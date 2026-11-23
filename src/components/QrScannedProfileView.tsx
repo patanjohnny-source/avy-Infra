@@ -6,17 +6,24 @@ import {
   CalendarCheck,
   CheckCircle2,
   Clock,
+  ExternalLink,
   Layers,
   MapPin,
+  Phone,
   QrCode,
   ShieldCheck,
+  Users,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { getTodayIso } from '../data/seedData';
 import { db } from '../lib/firebase';
 import type { QrPassRecord } from '../types/avy';
 import { formatDurationBreakdown } from '../utils/operations';
-import { parseQrScanParams, resolveScannedQrProfile } from '../utils/qrProfile';
+import {
+  parseQrScanParams,
+  resolveScannedQrProfile,
+  resolveScannedSiteQrProfile,
+} from '../utils/qrProfile';
 import { getWorkStatusBadgeClass, getWorkStatusLabel } from '../utils/tileZones';
 
 interface QrScannedProfileViewProps {
@@ -47,16 +54,18 @@ export function QrScannedProfileView({
   search,
   onExitScanView,
 }: QrScannedProfileViewProps) {
-  const { companyProfile, projects, towers, employees, deployments, assignments, attendance } =
+  const { companyProfile, projects, towers, flats, employees, deployments, assignments, attendance } =
     useStore();
 
   const scanParams = useMemo(() => parseQrScanParams(search), [search]);
   const [remoteQrPass, setRemoteQrPass] = useState<QrPassRecord | null>(null);
-  const [loadingRemote, setLoadingRemote] = useState(Boolean(scanParams.qrToken));
+  const [loadingRemote, setLoadingRemote] = useState(
+    Boolean(scanParams.scanKind === 'employee' && scanParams.qrToken)
+  );
 
   useEffect(() => {
     let active = true;
-    if (!scanParams.qrToken || scanParams.qrToken.length < 16) {
+    if (scanParams.scanKind !== 'employee' || !scanParams.qrToken || scanParams.qrToken.length < 16) {
       setRemoteQrPass(null);
       setLoadingRemote(false);
       return;
@@ -86,14 +95,14 @@ export function QrScannedProfileView({
     return () => {
       active = false;
     };
-  }, [scanParams.qrToken]);
+  }, [scanParams.scanKind, scanParams.qrToken]);
 
   const liveWorkspace = useMemo(
     () => ({
       companyProfile,
       projects,
       towers,
-      flats: [],
+      flats,
       employees,
       employeeDocuments: [],
       deployments,
@@ -105,8 +114,10 @@ export function QrScannedProfileView({
       dailySiteLogs: [],
       billingDocuments: [],
       companyDocuments: [],
+      teamMessages: [],
+      removedEmployees: [],
     }),
-    [companyProfile, projects, towers, employees, deployments, assignments, attendance]
+    [companyProfile, projects, towers, flats, employees, deployments, assignments, attendance]
   );
 
   const resolved = useMemo(
@@ -119,6 +130,199 @@ export function QrScannedProfileView({
       }),
     [scanParams, liveWorkspace, remoteQrPass]
   );
+
+  const resolvedSite = useMemo(
+    () =>
+      scanParams.scanKind === 'site'
+        ? resolveScannedSiteQrProfile({
+            scanParams,
+            liveWorkspace,
+            todayIso: getTodayIso(),
+          })
+        : { siteProfile: null, source: 'none' as const },
+    [scanParams, liveWorkspace]
+  );
+
+  if (scanParams.scanKind === 'site') {
+    const site = resolvedSite.siteProfile;
+    if (!site) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-lg p-6 text-center space-y-4">
+            <QrCode className="w-9 h-9 text-slate-400 mx-auto" aria-hidden="true" />
+            <div className="space-y-1">
+              <h1 className="text-lg font-semibold text-slate-900">
+                Project Site QR Pass Not Found
+              </h1>
+              <p className="text-sm text-slate-600">
+                This site checkpoint QR code could not be matched to a project or tower record.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onExitScanView}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800"
+            >
+              <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+              <span>Open Staff Portal</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      `${site.projectName} ${site.location}`
+    )}${site.placeId ? `&query_place_id=${encodeURIComponent(site.placeId)}` : ''}`;
+
+    const contacts = [
+      { role: 'Site Supervisor', name: site.supervisorName, phone: site.supervisorPhone },
+      { role: 'Tower Incharge', name: site.inchargeName, phone: site.inchargePhone },
+      { role: 'Site Engineer', name: site.engineerName, phone: site.engineerPhone },
+      { role: 'Project Manager', name: site.managerName, phone: site.managerPhone },
+    ].filter((c) => c.name || c.phone);
+
+    return (
+      <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col">
+        <header className="bg-slate-900 text-white border-b border-slate-800 px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded bg-orange-700 text-white font-display font-bold text-xs flex items-center justify-center shrink-0">
+              {site.companyName.slice(0, 3).toUpperCase()}
+            </div>
+            <span className="font-display font-bold text-sm sm:text-base tracking-tight truncate">
+              {site.companyName}
+            </span>
+            <span className="text-slate-600 hidden sm:inline" aria-hidden="true">/</span>
+            <span className="text-xs text-slate-300 hidden sm:inline truncate">
+              Project Site &amp; Tower Tracking Pass
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onExitScanView}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 rounded-md hover:bg-slate-700 whitespace-nowrap shrink-0"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Back to Portal</span>
+          </button>
+        </header>
+
+        <main
+          data-testid="qr-site-profile-view"
+          className="flex-1 w-full max-w-3xl mx-auto p-4 sm:p-6 space-y-5"
+        >
+          <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="h-1.5 bg-orange-700" />
+            <div className="p-5 sm:p-6 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                    <span className="px-2 py-0.5 rounded bg-orange-50 text-orange-800 border border-orange-200 font-semibold">
+                      {site.checkpointLabel}
+                    </span>
+                    <span className="text-emerald-700 font-semibold uppercase">{site.status}</span>
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-semibold text-slate-900 tracking-tight">
+                    {site.customTitle || (site.towerName ? `${site.projectName} · ${site.towerName}` : site.projectName)}
+                  </h1>
+                  <p className="text-xs text-slate-600 flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-orange-700 shrink-0" aria-hidden="true" />
+                    <span>{site.location}</span>
+                  </p>
+                  {site.customSubtitle && (
+                    <p className="text-xs font-medium text-slate-700 pt-1">{site.customSubtitle}</p>
+                  )}
+                </div>
+
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-300 rounded-md hover:bg-slate-200 whitespace-nowrap shrink-0"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                  <span>Open Site in Maps</span>
+                </a>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md">
+                  <div className="text-[11px] font-medium text-slate-500">Active Crew</div>
+                  <div className="mt-1 text-lg font-mono font-bold text-slate-900 tabular-nums flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-orange-700 shrink-0" aria-hidden="true" />
+                    <span>{site.activeCrewCount}</span>
+                  </div>
+                </div>
+                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-md">
+                  <div className="text-[11px] font-medium text-emerald-800">Present Today</div>
+                  <div className="mt-1 text-lg font-mono font-bold text-emerald-900 tabular-nums">
+                    {site.todayPresentCount}
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md">
+                  <div className="text-[11px] font-medium text-slate-500">Tracked Flats</div>
+                  <div className="mt-1 text-lg font-mono font-bold text-slate-900 tabular-nums">
+                    {site.totalFlats}
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-900 text-white rounded-md">
+                  <div className="text-[11px] text-slate-300">Tile Completion</div>
+                  <div className="mt-1 text-lg font-mono font-bold tabular-nums">
+                    {site.completionPct}%
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {contacts.length > 0 && (
+            <section className="bg-white border border-slate-200 rounded-lg p-5 sm:p-6 space-y-3">
+              <h2 className="text-base font-semibold text-slate-900">Site Supervision Contacts</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {contacts.map((c) => (
+                  <div
+                    key={`${c.role}-${c.name}`}
+                    className="p-3.5 bg-slate-50 border border-slate-200 rounded-md flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium text-slate-500">{c.role}</div>
+                      <div className="text-sm font-semibold text-slate-900 truncate">
+                        {c.name || 'Assigned'}
+                      </div>
+                    </div>
+                    {c.phone && (
+                      <a
+                        href={`tel:${c.phone}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-mono font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded hover:bg-emerald-100 whitespace-nowrap shrink-0"
+                      >
+                        <Phone className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>{c.phone}</span>
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <footer className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pt-1 pb-6">
+            <div className="inline-flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-slate-400" aria-hidden="true" />
+              <span>
+                Official project site checkpoint QR · Scan inside Quick Attendance to switch active site/tower
+              </span>
+            </div>
+            <span className="font-mono tabular-nums">
+              {resolvedSite.source === 'live_workspace'
+                ? 'Live Workspace View'
+                : 'Offline Site Pass Snapshot'}
+            </span>
+          </footer>
+        </main>
+      </div>
+    );
+  }
 
   const profile = resolved.profile;
 

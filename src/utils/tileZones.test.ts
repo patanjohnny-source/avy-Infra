@@ -2,13 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FLOOR_COMMON_UNIT_TYPE,
+  FLOOR_LAYOUT_PRESETS,
+  RESIDENTIAL_BHK_TYPES,
   TILE_ZONES,
   WHOLE_FLOOR_CUSTOM_PRESETS,
   addCustomZoneToFlatsBatch,
   addCustomZonesToFlatsBatch,
   buildMixedBhkFloorUnits,
+  buildOrderedSlotFloorUnits,
   buildWholeFloorCommonZoneItems,
   calculateFlatProgress,
+  collectOpenZoneIssuesForFlats,
   createDefaultZones,
   formatFloorCommonUnitNumber,
   formatFloorLabel,
@@ -415,6 +419,110 @@ test('upsertFloorCommonUnitsBatch creates dedicated FL{N}-Common units, merges n
   assert.equal(updatedFl1.zones.electrical_room_2_flooring?.label, 'Electrical Room 2 Flooring');
   assert.equal(updatedFl1.zones.electrical_room_2_skirting?.category, 'Skirting');
 });
+
+test('buildOrderedSlotFloorUnits supports 5 BHK and exact Tower 1 (8 flats) & Tower 2 (4 flats) presets up to floor 45', () => {
+  assert.ok(RESIDENTIAL_BHK_TYPES.includes('5 BHK'));
+  const t1Preset = FLOOR_LAYOUT_PRESETS.find((p) => p.id === 'tower_1_8_mixed')!;
+  const t2Preset = FLOOR_LAYOUT_PRESETS.find((p) => p.id === 'tower_2_4_mixed')!;
+
+  const t1Floor1 = buildOrderedSlotFloorUnits({
+    floorNumber: 1,
+    slotUnitTypes: t1Preset.slotUnitTypes,
+  });
+  assert.deepEqual(t1Floor1, [
+    { unitNumber: '101', unitType: '3 BHK' },
+    { unitNumber: '102', unitType: '3 BHK' },
+    { unitNumber: '103', unitType: '2 BHK' },
+    { unitNumber: '104', unitType: '2 BHK' },
+    { unitNumber: '105', unitType: '2 BHK' },
+    { unitNumber: '106', unitType: '2 BHK' },
+    { unitNumber: '107', unitType: '3 BHK' },
+    { unitNumber: '108', unitType: '3 BHK' },
+  ]);
+
+  const t1Floor45 = buildOrderedSlotFloorUnits({
+    floorNumber: 45,
+    slotUnitTypes: t1Preset.slotUnitTypes,
+  });
+  assert.equal(t1Floor45[0].unitNumber, '4501');
+  assert.equal(t1Floor45[0].unitType, '3 BHK');
+  assert.equal(t1Floor45[3].unitNumber, '4504');
+  assert.equal(t1Floor45[3].unitType, '2 BHK');
+  assert.equal(t1Floor45[7].unitNumber, '4508');
+  assert.equal(t1Floor45[7].unitType, '3 BHK');
+
+  const t2Floor45 = buildOrderedSlotFloorUnits({
+    floorNumber: 45,
+    slotUnitTypes: t2Preset.slotUnitTypes,
+  });
+  assert.deepEqual(t2Floor45, [
+    { unitNumber: '4501', unitType: '4 BHK' },
+    { unitNumber: '4502', unitType: '3 BHK' },
+    { unitNumber: '4503', unitType: '3 BHK' },
+    { unitNumber: '4504', unitType: '4 BHK' },
+  ]);
+
+  const fiveBhkFloor = buildOrderedSlotFloorUnits({
+    floorNumber: 12,
+    slotUnitTypes: ['5 BHK', '4 BHK', '5 BHK'],
+  });
+  assert.deepEqual(fiveBhkFloor, [
+    { unitNumber: '1201', unitType: '5 BHK' },
+    { unitNumber: '1202', unitType: '4 BHK' },
+    { unitNumber: '1203', unitType: '5 BHK' },
+  ]);
+});
+
+test('collectOpenZoneIssuesForFlats filters open remarks & voice notes for supervisor alert and assigned worker popup', () => {
+  const flats: FlatUnit[] = [
+    {
+      id: 'f101',
+      ownerId: 'u1',
+      projectId: 'p1',
+      towerId: 't1',
+      floorNumber: 1,
+      floorLabel: 'Floor 1',
+      unitNumber: '101',
+      unitType: '3 BHK',
+      zones: {
+        hall_flooring: {
+          status: 'in_progress',
+          sqft: 280,
+          assignedEmployeeId: 'emp1',
+          assignedEmployeeName: 'Raju',
+          notes: 'Check corner tile hollowness',
+          voiceNoteTranscript: 'Re-bed corner tile before grouting',
+          issueStatus: 'open',
+          issueReportedAt: '2026-11-22T09:00:00Z',
+        },
+        dado: {
+          status: 'completed',
+          sqft: 240,
+          assignedEmployeeId: 'emp2',
+          notes: 'Fixed spacer gap',
+          issueStatus: 'rectified',
+          rectifiedAt: '2026-11-22T10:00:00Z',
+        },
+      },
+      createdAt: '',
+      updatedAt: '',
+    },
+  ];
+  const projects = [{ id: 'p1', ownerId: 'u1', name: 'Skyline', location: 'Hyd', clientName: 'C1', status: 'active' as const, createdAt: '', updatedAt: '' }];
+  const towers = [{ id: 't1', ownerId: 'u1', projectId: 'p1', name: 'Tower A', totalFloors: 10, unitsPerFloor: 4, createdAt: '', updatedAt: '' }];
+
+  const allOpen = collectOpenZoneIssuesForFlats({ flats, projects, towers });
+  assert.equal(allOpen.length, 1);
+  assert.equal(allOpen[0].zoneKey, 'hall_flooring');
+  assert.equal(allOpen[0].voiceNoteTranscript, 'Re-bed corner tile before grouting');
+
+  const emp1Open = collectOpenZoneIssuesForFlats({ flats, projects, towers, employeeId: 'emp1' });
+  assert.equal(emp1Open.length, 1);
+  const emp2Open = collectOpenZoneIssuesForFlats({ flats, projects, towers, employeeId: 'emp2' });
+  assert.equal(emp2Open.length, 0);
+});
+
+
 
 
 

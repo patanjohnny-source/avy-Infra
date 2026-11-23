@@ -11,6 +11,7 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { PWAInstallButton } from './PWAInstallButton';
 import type { AuthRole } from '../utils/authAccess';
 
 const ROLE_TABS: {
@@ -39,7 +40,11 @@ const ROLE_TABS: {
   },
 ];
 
-export function LoginPage() {
+interface LoginPageProps {
+  onOpenSecurityPortal?: () => void;
+}
+
+export function LoginPage({ onOpenSecurityPortal }: LoginPageProps) {
   const {
     companyProfile,
     cloudConnected,
@@ -153,7 +158,7 @@ export function LoginPage() {
             </div>
           </div>
 
-          <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-3">
+          <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
             {cloudConnected && user ? (
               <div className="text-xs text-emerald-300 truncate">
                 Cloud Sync Active: {user.email}
@@ -168,6 +173,7 @@ export function LoginPage() {
                 <span>Connect Google Cloud Sync</span>
               </button>
             )}
+            <PWAInstallButton variant="login" />
           </div>
         </div>
 
@@ -333,6 +339,22 @@ export function LoginPage() {
                 </div>
               </button>
             </div>
+            {onOpenSecurityPortal && (
+              <div className="pt-2 flex items-center justify-between border-t border-slate-100">
+                <span className="text-[11px] text-slate-500">
+                  Source code protection, backups &amp; 2FA developer access
+                </span>
+                <button
+                  type="button"
+                  onClick={onOpenSecurityPortal}
+                  data-testid="open-security-portal-login-btn"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-slate-100 border border-slate-300 rounded-md hover:bg-slate-200 transition-colors whitespace-nowrap"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                  <span>Owner &amp; Developer Security Portal</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

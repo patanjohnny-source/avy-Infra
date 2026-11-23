@@ -6,19 +6,86 @@ import type {
   AssignmentStatus,
   AttendanceRecord,
   AttendanceStatus,
+  CustomQrAccentTheme,
+  CustomQrErrorLevel,
   DeploymentRecord,
   Employee,
   EmployeeRole,
+  FlatUnit,
   Project,
   QrActiveAssignmentSummary,
   QrDeploymentSummary,
   QrPassRecord,
   QrScannedProfile,
+  SiteQrScannedProfile,
   Tower,
   WorkAssignment,
 } from '../types/avy';
 
 const TOKEN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+export interface QrAccentThemeSpec {
+  id: CustomQrAccentTheme;
+  label: string;
+  headerBg: string;
+  accentBg: string;
+  badgeTextHex: string;
+  qrDarkHex: string;
+  headerRgb: [number, number, number];
+  accentRgb: [number, number, number];
+}
+
+export const CUSTOM_QR_ACCENT_THEMES: Record<CustomQrAccentTheme, QrAccentThemeSpec> = {
+  navy_orange: {
+    id: 'navy_orange',
+    label: 'Navy & Orange',
+    headerBg: '#0f172a',
+    accentBg: '#c2410c',
+    badgeTextHex: '#fed7aa',
+    qrDarkHex: '#0f172a',
+    headerRgb: [15, 23, 42],
+    accentRgb: [194, 65, 12],
+  },
+  emerald_slate: {
+    id: 'emerald_slate',
+    label: 'Site Emerald',
+    headerBg: '#064e3b',
+    accentBg: '#059669',
+    badgeTextHex: '#a7f3d0',
+    qrDarkHex: '#064e3b',
+    headerRgb: [6, 78, 59],
+    accentRgb: [5, 150, 105],
+  },
+  indigo_sky: {
+    id: 'indigo_sky',
+    label: 'Cobalt Blue',
+    headerBg: '#1e3a8a',
+    accentBg: '#2563eb',
+    badgeTextHex: '#bfdbfe',
+    qrDarkHex: '#1e3a8a',
+    headerRgb: [30, 58, 138],
+    accentRgb: [37, 99, 235],
+  },
+  charcoal_amber: {
+    id: 'charcoal_amber',
+    label: 'Charcoal & Amber',
+    headerBg: '#292524',
+    accentBg: '#d97706',
+    badgeTextHex: '#fde68a',
+    qrDarkHex: '#1c1917',
+    headerRgb: [41, 37, 36],
+    accentRgb: [217, 119, 6],
+  },
+};
+
+export const SITE_CHECKPOINT_PRESETS: string[] = [
+  'Main Site Gate',
+  'Tower Entrance',
+  'Attendance Check-In',
+  'Material Hoist Point',
+  'Site Office',
+  'Safety & QC Point',
+];
 
 export function generateQrPassToken(length = 20): string {
   const safeLen = Math.max(16, Math.min(32, length));
@@ -154,6 +221,31 @@ interface CompactQrPayloadV1 {
   cc: number; // completedZonesCount
   w: Array<[string, string, string, string, 'a' | 'p' | 'k' | 'c', string, number]>; // unit, proj, twr, zone, status, date, sqft
   dp: Array<[string, string, string]>; // proj, twr, date
+}
+
+// Compact Project Site & Tower payload v1 for gate posters & site check-in QRs
+interface CompactSiteQrPayloadV1 {
+  v: 1;
+  pid: string; // projectId
+  pn: string; // projectName
+  loc: string; // location
+  pl?: string; // placeId
+  st: 'a' | 'c' | 'h'; // active | completed | on_hold
+  cl: string; // clientName
+  co: string; // companyName
+  tid?: string; // towerId
+  tn?: string; // towerName
+  cp: string; // checkpointLabel
+  ct?: string; // customTitle
+  cs?: string; // customSubtitle
+  mg?: [string, string]; // [managerName, managerPhone]
+  eg?: [string, string]; // [engineerName, engineerPhone]
+  sp?: [string, string]; // [supervisorName, supervisorPhone]
+  cr: number; // activeCrewCount
+  pr: number; // todayPresentCount
+  fl: number; // totalFlats
+  pc: number; // completionPct
+  ud: string; // updatedAt date
 }
 
 function toBase64Url(input: string): string {
@@ -297,10 +389,187 @@ export function decodeQrSnapshot(encoded: string): QrScannedProfile | null {
   }
 }
 
+export function buildSiteQrPassData(params: {
+  project: Project;
+  tower?: Tower;
+  companyName: string;
+  checkpointLabel?: string;
+  customTitle?: string;
+  customSubtitle?: string;
+  employees: Employee[];
+  flats: FlatUnit[];
+  attendance: AttendanceRecord[];
+  todayIso?: string;
+}): SiteQrScannedProfile {
+  const {
+    project,
+    tower,
+    companyName,
+    checkpointLabel,
+    customTitle,
+    customSubtitle,
+    employees,
+    flats,
+    attendance,
+  } = params;
+  const today = params.todayIso || getTodayIso();
+
+  const scopedEmployees = employees.filter((e) => {
+    if (e.status !== 'active') return false;
+    if (tower) return e.currentTowerId === tower.id;
+    return e.currentProjectId === project.id;
+  });
+
+  const scopedEmpIds = new Set(scopedEmployees.map((e) => e.id));
+  const todayPresentCount = attendance.filter((a) => {
+    if (a.date !== today) return false;
+    if (a.status !== 'present' && a.status !== 'half_day') return false;
+    if (tower) {
+      return a.towerId === tower.id || scopedEmpIds.has(a.employeeId);
+    }
+    return a.projectId === project.id || scopedEmpIds.has(a.employeeId);
+  }).length;
+
+  const scopedFlats = flats.filter((f) =>
+    tower ? f.towerId === tower.id : f.projectId === project.id
+  );
+  let totalZones = 0;
+  let doneZones = 0;
+  for (const flat of scopedFlats) {
+    const zones = Object.values(flat.zones || {});
+    totalZones += zones.length;
+    doneZones += zones.filter(
+      (z) =>
+        z.status === 'completed' ||
+        z.status === 'cleaning_done' ||
+        z.status === 'qc_approved'
+    ).length;
+  }
+  const completionPct = totalZones > 0 ? Math.round((doneZones / totalZones) * 100) : 0;
+
+  return {
+    projectId: project.id,
+    projectName: clampString(project.name, 120) || 'Project Site',
+    location: clampString(project.location, 160) || 'Site Location',
+    placeId: project.placeId ? clampString(project.placeId, 120) : undefined,
+    status: project.status,
+    clientName: clampString(project.clientName, 120) || '',
+    companyName: clampString(companyName, 120) || 'AVY INFRA',
+    towerId: tower?.id,
+    towerName: tower ? clampString(tower.name, 80) : undefined,
+    checkpointLabel: clampString(checkpointLabel || '', 60) || (tower ? 'Tower Entrance' : 'Main Site Gate'),
+    customTitle: customTitle ? clampString(customTitle, 120) : undefined,
+    customSubtitle: customSubtitle ? clampString(customSubtitle, 140) : undefined,
+    managerName: project.managerName ? clampString(project.managerName, 80) : undefined,
+    managerPhone: project.managerPhone ? clampString(project.managerPhone, 24) : undefined,
+    engineerName: (tower?.engineerName || project.engineerName)
+      ? clampString(tower?.engineerName || project.engineerName || '', 80)
+      : undefined,
+    engineerPhone: (tower?.engineerPhone || project.engineerPhone)
+      ? clampString(tower?.engineerPhone || project.engineerPhone || '', 24)
+      : undefined,
+    supervisorName: tower?.supervisorName ? clampString(tower.supervisorName, 80) : undefined,
+    supervisorPhone: tower?.supervisorPhone ? clampString(tower.supervisorPhone, 24) : undefined,
+    inchargeName: tower?.inchargeName ? clampString(tower.inchargeName, 80) : undefined,
+    inchargePhone: tower?.inchargePhone ? clampString(tower.inchargePhone, 24) : undefined,
+    activeCrewCount: scopedEmployees.length,
+    todayPresentCount,
+    totalFlats: scopedFlats.length,
+    completionPct,
+    updatedAt: today,
+  };
+}
+
+export function encodeSiteQrSnapshot(pass: SiteQrScannedProfile): string {
+  const compact: CompactSiteQrPayloadV1 = {
+    v: 1,
+    pid: pass.projectId,
+    pn: pass.projectName.slice(0, 72),
+    loc: pass.location.slice(0, 88),
+    ...(pass.placeId ? { pl: pass.placeId.slice(0, 80) } : {}),
+    st: pass.status === 'completed' ? 'c' : pass.status === 'on_hold' ? 'h' : 'a',
+    cl: pass.clientName.slice(0, 60),
+    co: pass.companyName.slice(0, 60),
+    ...(pass.towerId ? { tid: pass.towerId } : {}),
+    ...(pass.towerName ? { tn: pass.towerName.slice(0, 48) } : {}),
+    cp: pass.checkpointLabel.slice(0, 48),
+    ...(pass.customTitle ? { ct: pass.customTitle.slice(0, 72) } : {}),
+    ...(pass.customSubtitle ? { cs: pass.customSubtitle.slice(0, 80) } : {}),
+    ...(pass.managerName || pass.managerPhone
+      ? { mg: [pass.managerName || '', pass.managerPhone || ''] }
+      : {}),
+    ...(pass.engineerName || pass.engineerPhone
+      ? { eg: [pass.engineerName || '', pass.engineerPhone || ''] }
+      : {}),
+    ...(pass.supervisorName || pass.supervisorPhone
+      ? { sp: [pass.supervisorName || '', pass.supervisorPhone || ''] }
+      : {}),
+    cr: pass.activeCrewCount,
+    pr: pass.todayPresentCount,
+    fl: pass.totalFlats,
+    pc: pass.completionPct,
+    ud: pass.updatedAt,
+  };
+  return toBase64Url(JSON.stringify(compact));
+}
+
+export function decodeSiteQrSnapshot(encoded: string): SiteQrScannedProfile | null {
+  if (!encoded || typeof encoded !== 'string') return null;
+  try {
+    const raw = JSON.parse(fromBase64Url(encoded.trim())) as Partial<CompactSiteQrPayloadV1>;
+    if (!raw || raw.v !== 1 || !raw.pn) return null;
+    return {
+      projectId: String(raw.pid || ''),
+      projectName: String(raw.pn),
+      location: String(raw.loc || 'Site Location'),
+      placeId: raw.pl ? String(raw.pl) : undefined,
+      status: raw.st === 'c' ? 'completed' : raw.st === 'h' ? 'on_hold' : 'active',
+      clientName: String(raw.cl || ''),
+      companyName: String(raw.co || 'AVY INFRA'),
+      towerId: raw.tid ? String(raw.tid) : undefined,
+      towerName: raw.tn ? String(raw.tn) : undefined,
+      checkpointLabel: String(raw.cp || 'Main Site Gate'),
+      customTitle: raw.ct ? String(raw.ct) : undefined,
+      customSubtitle: raw.cs ? String(raw.cs) : undefined,
+      managerName: raw.mg?.[0] || undefined,
+      managerPhone: raw.mg?.[1] || undefined,
+      engineerName: raw.eg?.[0] || undefined,
+      engineerPhone: raw.eg?.[1] || undefined,
+      supervisorName: raw.sp?.[0] || undefined,
+      supervisorPhone: raw.sp?.[1] || undefined,
+      activeCrewCount: Number(raw.cr) || 0,
+      todayPresentCount: Number(raw.pr) || 0,
+      totalFlats: Number(raw.fl) || 0,
+      completionPct: Number(raw.pc) || 0,
+      updatedAt: String(raw.ud || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildSiteQrScanUrl(params: {
+  origin: string;
+  passData: SiteQrScannedProfile;
+}): string {
+  const base = (params.origin || '').replace(/\/$/, '');
+  const search = new URLSearchParams();
+  search.set('qrSite', params.passData.projectId);
+  if (params.passData.towerId) {
+    search.set('qrTower', params.passData.towerId);
+  }
+  search.set('s', encodeSiteQrSnapshot(params.passData));
+  return `${base}/?${search.toString()}`;
+}
+
 export interface QrScanParams {
+  scanKind: 'employee' | 'site' | 'none';
   qrToken: string;
   qrEmp: string;
   qrEncoded: string;
+  qrSite: string;
+  qrTower: string;
+  qrSiteEncoded: string;
   hasQrScanRoute: boolean;
 }
 
@@ -310,14 +579,27 @@ export function parseQrScanParams(search: string): QrScanParams {
   const qrToken = rawToken ? sanitizeId(rawToken) : '';
   const qrEmp = sp.get('qrEmp')?.trim() || '';
   const qrEncoded = sp.get('qr')?.trim() || '';
-  const hasQrScanRoute = Boolean(
-    (qrToken && qrToken.length >= 16) || qrEmp || qrEncoded
-  );
+  const qrSite = sp.get('qrSite')?.trim() || '';
+  const qrTower = sp.get('qrTower')?.trim() || '';
+  const qrSiteEncoded = sp.get('s')?.trim() || '';
+
+  const isSiteRoute = Boolean(qrSite || qrSiteEncoded);
+  const isEmpRoute = Boolean((qrToken && qrToken.length >= 16) || qrEmp || qrEncoded);
+  const scanKind: 'employee' | 'site' | 'none' = isSiteRoute
+    ? 'site'
+    : isEmpRoute
+      ? 'employee'
+      : 'none';
+
   return {
+    scanKind,
     qrToken,
     qrEmp,
     qrEncoded,
-    hasQrScanRoute,
+    qrSite,
+    qrTower,
+    qrSiteEncoded,
+    hasQrScanRoute: scanKind !== 'none',
   };
 }
 
@@ -416,25 +698,74 @@ export function resolveScannedQrProfile(params: {
   return { profile: null, source: 'none' };
 }
 
-export async function generateQrSvgString(value: string): Promise<string> {
+export function resolveScannedSiteQrProfile(params: {
+  scanParams: QrScanParams;
+  liveWorkspace?: WorkspaceSnapshot | null;
+  todayIso?: string;
+}): {
+  siteProfile: SiteQrScannedProfile | null;
+  source: 'live_workspace' | 'qr_snapshot' | 'none';
+} {
+  const { scanParams, liveWorkspace, todayIso } = params;
+  const decoded = decodeSiteQrSnapshot(scanParams.qrSiteEncoded);
+
+  if (liveWorkspace && liveWorkspace.projects.length > 0 && scanParams.qrSite) {
+    const matchedProj = liveWorkspace.projects.find((p) => p.id === scanParams.qrSite);
+    if (matchedProj) {
+      const matchedTower = scanParams.qrTower
+        ? liveWorkspace.towers.find(
+            (t) => t.id === scanParams.qrTower && t.projectId === matchedProj.id
+          )
+        : undefined;
+      const liveSite = buildSiteQrPassData({
+        project: matchedProj,
+        tower: matchedTower,
+        companyName: liveWorkspace.companyProfile?.companyName || 'AVY INFRA',
+        checkpointLabel: decoded?.checkpointLabel,
+        customTitle: decoded?.customTitle,
+        customSubtitle: decoded?.customSubtitle,
+        employees: liveWorkspace.employees,
+        flats: liveWorkspace.flats,
+        attendance: liveWorkspace.attendance,
+        todayIso,
+      });
+      return { siteProfile: liveSite, source: 'live_workspace' };
+    }
+  }
+
+  if (decoded) {
+    return { siteProfile: decoded, source: 'qr_snapshot' };
+  }
+
+  return { siteProfile: null, source: 'none' };
+}
+
+export async function generateQrSvgString(
+  value: string,
+  options?: { errorCorrectionLevel?: CustomQrErrorLevel; darkColor?: string }
+): Promise<string> {
   return QRCode.toString(value, {
     type: 'svg',
-    errorCorrectionLevel: 'M',
+    errorCorrectionLevel: options?.errorCorrectionLevel || 'M',
     margin: 1,
     color: {
-      dark: '#0f172a',
+      dark: options?.darkColor || '#0f172a',
       light: '#ffffff',
     },
   });
 }
 
-export async function generateQrPngDataUrl(value: string, width = 280): Promise<string> {
+export async function generateQrPngDataUrl(
+  value: string,
+  width = 280,
+  options?: { errorCorrectionLevel?: CustomQrErrorLevel; darkColor?: string }
+): Promise<string> {
   return QRCode.toDataURL(value, {
-    errorCorrectionLevel: 'M',
+    errorCorrectionLevel: options?.errorCorrectionLevel || 'M',
     margin: 1,
     width,
     color: {
-      dark: '#0f172a',
+      dark: options?.darkColor || '#0f172a',
       light: '#ffffff',
     },
   });

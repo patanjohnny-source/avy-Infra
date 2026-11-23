@@ -18,7 +18,9 @@ import {
   Settings2,
   SlidersHorizontal,
   Trash2,
+  Wrench,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { getTodayIso } from '../data/seedData';
@@ -37,12 +39,14 @@ import {
 import { buildExpenseReportPdfBlob } from '../utils/idCardPdf';
 import {
   EXPENSE_CATEGORY_LABELS,
+  SUPERVISOR_TOOL_PRESETS,
   computeProjectAndTowerExpenses,
   computeTowerAttendanceSummary,
   computeTowerFoodExpenseBreakdown,
   formatDurationBreakdown,
   formatTowerProjectStatusWhatsappMessage,
   getExpenseCategoryLabel,
+  summarizeSupervisorToolSpends,
 } from '../utils/operations';
 import { buildWhatsappUrl, formatINR, sanitizeWhatsappPhone } from '../utils/payroll';
 import {
@@ -56,6 +60,12 @@ import {
   type FoodFollowUpSettings,
 } from '../utils/foodFollowUp';
 import { calculateFlatProgress } from '../utils/tileZones';
+import {
+  buildWeeklyFoodDecisionWhatsappMessage,
+  buildWhatsappDirectUrl,
+  groupWeeklyFoodApprovalBatches,
+  resolveAdminApprovalContact,
+} from '../utils/weeklyFoodApproval';
 import {
   ImageProofLightboxModal,
   type ProofLightboxPayload,
@@ -83,9 +93,11 @@ export function ExpensesReportsView({
     expenses: rawExpenses,
     addExpense,
     deleteExpense,
+    reviewSupervisorExpense,
     updateCompanyProfile,
     acknowledgeAdvance,
     recordAdvanceFollowUpSent,
+    reviewWeeklyFoodApproval,
   } = useStore();
 
   const isAdmin = isAdminSession(session);
@@ -128,6 +140,11 @@ export function ExpensesReportsView({
   const [foodFollowUpFilter, setFoodFollowUpFilter] = useState<
     'all' | 'overdue' | 'within_window' | 'acknowledged'
   >('all');
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const pendingFoodBatches = useMemo(
+    () => groupWeeklyFoodApprovalBatches(rawAdvances, 'pending_admin'),
+    [rawAdvances]
+  );
   const [showFollowUpSettings, setShowFollowUpSettings] = useState(false);
   const [ackingAdvanceId, setAckingAdvanceId] = useState<string | null>(null);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
@@ -287,9 +304,17 @@ export function ExpensesReportsView({
   const [expTransactionId, setExpTransactionId] = useState('');
   const [expUpiId, setExpUpiId] = useState('');
   const [expProofImageDataUrl, setExpProofImageDataUrl] = useState('');
+  const [expToolItemsSummary, setExpToolItemsSummary] = useState('');
+  const [expBillReceiptNumber, setExpBillReceiptNumber] = useState('');
   const [expNotes, setExpNotes] = useState('');
   const [expError, setExpError] = useState('');
   const [savingExp, setSavingExp] = useState(false);
+  const [reviewingExpId, setReviewingExpId] = useState<string | null>(null);
+
+  const supervisorSpendSummary = useMemo(
+    () => summarizeSupervisorToolSpends(expenses),
+    [expenses]
+  );
 
   const modalTowers = useMemo(
     () => towers.filter((t) => t.projectId === expProjectId),
@@ -491,7 +516,7 @@ export function ExpensesReportsView({
     setExpDate(today);
     setExpProjectId(defProj);
     setExpTowerId(defTwr);
-    setExpCategory(isSupervisor ? 'daily_expense' : 'adhesive_grout');
+    setExpCategory(isSupervisor ? 'tools_equipment' : 'adhesive_grout');
     setExpCustomCategory('');
     setSaveCustomExpPreset(true);
     setExpDesc('');
@@ -502,6 +527,8 @@ export function ExpensesReportsView({
     setExpTransactionId('');
     setExpUpiId('');
     setExpProofImageDataUrl('');
+    setExpToolItemsSummary('');
+    setExpBillReceiptNumber('');
     setExpNotes('');
     setExpError('');
     setShowAddExpense(true);
@@ -536,6 +563,8 @@ export function ExpensesReportsView({
         transactionId: expTransactionId.trim() || undefined,
         upiId: expUpiId.trim() || undefined,
         proofImageDataUrl: expProofImageDataUrl || undefined,
+        toolItemsSummary: expToolItemsSummary.trim() || undefined,
+        billReceiptNumber: expBillReceiptNumber.trim() || undefined,
         notes: expNotes.trim(),
       });
       if (isAdmin && saveCustomExpPreset && cleanCustomCat) {
@@ -692,6 +721,274 @@ export function ExpensesReportsView({
           <p className="mt-1 text-xs text-slate-500">{scopedExpenses.length} expense bills logged</p>
         </div>
       </div>
+
+      {/* Admin Pending Weekly Food Approval Queue */}
+      {isAdmin && pendingFoodBatches.length > 0 && (
+        <section
+          data-testid="expenses-admin-pending-food-approvals"
+          className="bg-white border border-amber-300 rounded-lg p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                Pending Weekly Food Run Admin Approvals ({pendingFoodBatches.length})
+              </h2>
+              <p className="text-xs text-slate-500">
+                Review supervisor weekly food batches and send simultaneous WhatsApp confirmation.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2.5">
+            {pendingFoodBatches.map((batch) => {
+              const adminContact = resolveAdminApprovalContact(companyProfile);
+              const supPhone =
+                rawEmployees.find((e) => e.fullName === batch.submittedByName)?.phone ||
+                adminContact.adminPhone;
+              const waUrl = buildWhatsappDirectUrl(
+                supPhone,
+                buildWeeklyFoodDecisionWhatsappMessage({
+                  companyName,
+                  decision: 'approved',
+                  batch,
+                  reviewedByName: session?.displayName || adminContact.adminName,
+                })
+              );
+              const busy = approvalBusyId === batch.batchId;
+
+              return (
+                <div
+                  key={batch.batchId}
+                  className="p-3 bg-amber-50/60 border border-amber-200 rounded-md flex flex-col md:flex-row md:items-center justify-between gap-3"
+                >
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="text-xs font-semibold text-slate-900">
+                      {batch.projectName} · {batch.towerName}{' '}
+                      <span className="font-mono text-amber-900">({batch.date})</span>
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      Submitted by <strong>{batch.submittedByName}</strong> · {batch.entries.length}{' '}
+                      worker(s) · <strong className="font-mono">{formatINR(batch.totalAmount)}</strong>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setApprovalBusyId(batch.batchId);
+                        try {
+                          await reviewWeeklyFoodApproval({
+                            advanceIds: batch.entries.map((e) => e.id),
+                            decision: 'approved',
+                          });
+                        } finally {
+                          setApprovalBusyId(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Approve</span>
+                    </button>
+                    <a
+                      href={waUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-emerald-800 bg-white border border-emerald-300 rounded hover:bg-emerald-50"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Send WA</span>
+                    </a>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={async () => {
+                        setApprovalBusyId(batch.batchId);
+                        try {
+                          await reviewWeeklyFoodApproval({
+                            advanceIds: batch.entries.map((e) => e.id),
+                            decision: 'rejected',
+                          });
+                        } finally {
+                          setApprovalBusyId(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+                    >
+                      <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Reject</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Supervisor Tool Purchases & Site Spends Queue */}
+      {(supervisorSpendSummary.totalCount > 0 || isSupervisor) && (
+        <section
+          data-testid="supervisor-tool-spends-section"
+          className="bg-white border border-slate-200 rounded-lg overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <Wrench className="w-4 h-4 text-orange-700 shrink-0 mt-1" aria-hidden="true" />
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">
+                  Supervisor Tool Purchases &amp; Site Spends ({supervisorSpendSummary.totalCount})
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {isAdmin
+                    ? 'Bills submitted by site supervisors for blades, trowels, grinders & urgent site purchases — review and reimburse below.'
+                    : 'Your submitted tower tool purchases & urgent site spends automatically synced to Admin for approval.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+              <span className="px-2 py-1 rounded bg-amber-50 text-amber-900 border border-amber-200">
+                Pending: {supervisorSpendSummary.pendingCount} ({formatINR(supervisorSpendSummary.pendingAmount)})
+              </span>
+              <span className="px-2 py-1 rounded bg-sky-50 text-sky-900 border border-sky-200">
+                Approved: {supervisorSpendSummary.approvedCount} ({formatINR(supervisorSpendSummary.approvedAmount)})
+              </span>
+              <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-900 border border-emerald-200">
+                Reimbursed: {supervisorSpendSummary.reimbursedCount} ({formatINR(supervisorSpendSummary.reimbursedAmount)})
+              </span>
+              {isSupervisor && (
+                <button
+                  type="button"
+                  onClick={handleOpenAddExpense}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 font-sans font-semibold text-white bg-orange-700 rounded hover:bg-orange-800"
+                >
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Log Tool Purchase</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {supervisorSpendSummary.rows.length === 0 ? (
+            <div className="p-6 text-center text-xs text-slate-500">
+              No supervisor tool purchases logged yet. Click &ldquo;Log Tool Purchase&rdquo; to record hardware, blade, or urgent site buys with bill photo.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {supervisorSpendSummary.rows.map((exp) => {
+                const status = exp.reimbursementStatus || 'pending_admin';
+                const busy = reviewingExpId === exp.id;
+                return (
+                  <div
+                    key={exp.id}
+                    className="px-5 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs hover:bg-slate-50/60"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-slate-900 text-sm">{exp.description}</span>
+                        <span className="font-mono font-bold text-orange-700">{formatINR(exp.amount)}</span>
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-mono font-semibold rounded border ${
+                            status === 'reimbursed'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : status === 'approved'
+                                ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                : 'bg-amber-50 text-amber-800 border-amber-200'
+                          }`}
+                        >
+                          {status === 'reimbursed'
+                            ? 'REIMBURSED'
+                            : status === 'approved'
+                              ? 'APPROVED'
+                              : 'PENDING ADMIN'}
+                        </span>
+                      </div>
+                      <div className="text-slate-600 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span>
+                          Supervisor: <strong className="text-slate-800">{exp.recordedByName || 'Supervisor'}</strong>
+                        </span>
+                        <span>· {exp.projectName}{exp.towerName ? ` / ${exp.towerName}` : ''}</span>
+                        <span className="font-mono">· {exp.date}</span>
+                        {exp.vendorName && <span>· Vendor: {exp.vendorName}</span>}
+                        {exp.billReceiptNumber && (
+                          <span className="font-mono text-slate-800">· Bill #{exp.billReceiptNumber}</span>
+                        )}
+                      </div>
+                      {exp.toolItemsSummary && (
+                        <div className="text-[11px] text-slate-700">
+                          Tools / Items: <span className="font-medium">{exp.toolItemsSummary}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      {exp.proofImageDataUrl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setProofLightbox({
+                              title: `Tool Bill Proof — ${exp.description}`,
+                              subtitle: `${exp.recordedByName || 'Supervisor'} · ${exp.projectName}`,
+                              imageDataUrl: exp.proofImageDataUrl!,
+                              paymentMode: exp.paymentMode,
+                              paymentApp: exp.paymentApp,
+                              transactionId: exp.transactionId,
+                              upiId: exp.upiId,
+                              amount: exp.amount,
+                              date: exp.date,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-slate-800 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
+                        >
+                          <Eye className="w-3 h-3" aria-hidden="true" />
+                          <span>Bill Photo</span>
+                        </button>
+                      )}
+                      {isAdmin && status === 'pending_admin' && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            setReviewingExpId(exp.id);
+                            try {
+                              await reviewSupervisorExpense(exp.id, 'approved');
+                            } finally {
+                              setReviewingExpId(null);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-sky-700 rounded hover:bg-sky-800 disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                          <span>Approve</span>
+                        </button>
+                      )}
+                      {isAdmin && status !== 'reimbursed' && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            setReviewingExpId(exp.id);
+                            try {
+                              await reviewSupervisorExpense(exp.id, 'reimbursed');
+                            } finally {
+                              setReviewingExpId(null);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                          <span>Mark Reimbursed</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Weekly Food Advance — 24h Acknowledgment & Automated WhatsApp Follow-Up */}
       <section
@@ -1485,11 +1782,39 @@ export function ExpensesReportsView({
                       <div className="font-medium text-slate-900">{exp.description}</div>
                       <div className="text-xs text-slate-500">
                         <span className="font-medium text-slate-700">{getExpenseCategoryLabel(exp)}</span>
+                        {exp.toolItemsSummary ? ` · ${exp.toolItemsSummary}` : ''}
                         {exp.notes ? ` · ${exp.notes}` : ''}
                       </div>
+                      {exp.recordedByRole === 'supervisor' && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] font-mono">
+                          <span className="px-1.5 py-0.5 rounded bg-orange-50 text-orange-800 border border-orange-200">
+                            Supervisor: {exp.recordedByName || 'Site Supervisor'}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded border ${
+                              exp.reimbursementStatus === 'reimbursed'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : exp.reimbursementStatus === 'approved'
+                                  ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                  : 'bg-amber-50 text-amber-800 border-amber-200'
+                            }`}
+                          >
+                            {exp.reimbursementStatus === 'reimbursed'
+                              ? 'Reimbursed'
+                              : exp.reimbursementStatus === 'approved'
+                                ? 'Approved'
+                                : 'Pending Admin'}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-3 text-xs text-slate-600">
                       <div>{exp.vendorName || 'Direct Site Purchase'}</div>
+                      {exp.billReceiptNumber && (
+                        <div className="font-mono text-[10px] text-slate-700">
+                          Bill #{exp.billReceiptNumber}
+                        </div>
+                      )}
                       <div className="uppercase font-mono text-[11px] text-slate-500">
                         {exp.paymentMode}
                         {exp.paymentApp ? ` · ${exp.paymentApp}` : ''}
@@ -1818,6 +2143,68 @@ export function ExpensesReportsView({
                   </select>
                 </div>
               </div>
+
+              {(isSupervisor || expCategory === 'tools_equipment') && (
+                <div
+                  data-testid="supervisor-tool-fields"
+                  className="p-3 bg-amber-50/60 border border-amber-200 rounded-md space-y-2.5"
+                >
+                  <div className="text-xs font-semibold text-amber-950 flex items-center gap-1.5">
+                    <Wrench className="w-3.5 h-3.5 text-orange-700" aria-hidden="true" />
+                    <span>Tool Purchase Quick Presets &amp; Bill Reference</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SUPERVISOR_TOOL_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setExpToolItemsSummary((prev) => {
+                            const existing = prev
+                              .split(',')
+                              .map((s) => s.trim())
+                              .filter(Boolean);
+                            if (existing.includes(preset)) return prev;
+                            return [...existing, preset].join(', ');
+                          });
+                          if (!expDesc.trim()) setExpDesc(preset);
+                        }}
+                        className="px-2 py-0.5 text-[11px] font-medium bg-white text-slate-700 border border-amber-300 rounded hover:bg-amber-100"
+                      >
+                        + {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="exp-tool-items" className="block text-[11px] font-medium text-slate-700 mb-1">
+                        Tool Items Purchased
+                      </label>
+                      <input
+                        id="exp-tool-items"
+                        type="text"
+                        value={expToolItemsSummary}
+                        onChange={(e) => setExpToolItemsSummary(e.target.value)}
+                        placeholder="e.g. Diamond Cutting Blade x3, Trowel"
+                        className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-md"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="exp-bill-receipt" className="block text-[11px] font-medium text-slate-700 mb-1">
+                        Bill / Receipt No.
+                      </label>
+                      <input
+                        id="exp-bill-receipt"
+                        type="text"
+                        value={expBillReceiptNumber}
+                        onChange={(e) => setExpBillReceiptNumber(e.target.value)}
+                        placeholder="e.g. INV-4418"
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-md"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label htmlFor="exp-notes" className="block text-xs font-medium text-slate-700 mb-1">

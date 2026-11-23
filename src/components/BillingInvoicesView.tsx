@@ -8,6 +8,7 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  ImagePlus,
   Mail,
   MessageSquare,
   Pencil,
@@ -44,7 +45,11 @@ import {
   generateNextBillingNumber,
   organizeTaxInvoicesByProject,
 } from '../utils/billing';
-import { buildBillingDocumentPdfBlob, triggerBlobDownload } from '../utils/idCardPdf';
+import {
+  buildBillingDocumentPdfBlob,
+  compressBoundedScreenshotDataUrl,
+  triggerBlobDownload,
+} from '../utils/idCardPdf';
 import { calculateFlatProgress, getEffectiveZonesForFlat } from '../utils/tileZones';
 import { PrintPreviewOverlay } from './PrintPreviewOverlay';
 import { PrintableInvoiceSheet } from './PrintableInvoiceSheet';
@@ -164,6 +169,10 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
   const [amountPaid, setAmountPaid] = useState('0');
   const [notes, setNotes] = useState('');
   const [terms, setTerms] = useState(DEFAULT_BILLING_TERMS);
+  const [useCustomLetterhead, setUseCustomLetterhead] = useState(false);
+  const [hideDefaultHeader, setHideDefaultHeader] = useState(false);
+  const [letterheadBgDataUrl, setLetterheadBgDataUrl] = useState('');
+  const [letterheadBgOpacity, setLetterheadBgOpacity] = useState(0.14);
   const [lineRows, setLineRows] = useState<DraftLineRow[]>([createEmptyLineRow('18')]);
 
   // Gemini AI prompt engineering state
@@ -259,6 +268,7 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
       projects.find((p) => p.id === (prefillProjectId || projects[0]?.id)) || null;
     const defaultTaxMode: BillingTaxMode = initialType === 'tax_invoice' ? 'cgst_sgst' : 'none';
     const defaultGst = initialType === 'tax_invoice' ? '18' : '0';
+    const hasCompanyBg = Boolean(companyProfile.quotationLetterheadBgDataUrl);
 
     setEditingDoc(null);
     setDocType(initialType);
@@ -278,6 +288,15 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
     setAmountPaid('0');
     setNotes('');
     setTerms(DEFAULT_BILLING_TERMS);
+    setUseCustomLetterhead(initialType === 'quotation' && hasCompanyBg);
+    setHideDefaultHeader(false);
+    setLetterheadBgDataUrl(companyProfile.quotationLetterheadBgDataUrl || '');
+    setLetterheadBgOpacity(
+      typeof companyProfile.quotationLetterheadOpacity === 'number' &&
+        Number.isFinite(companyProfile.quotationLetterheadOpacity)
+        ? Math.max(0.05, Math.min(1, companyProfile.quotationLetterheadOpacity))
+        : 0.14
+    );
     setLineRows([createEmptyLineRow(defaultGst)]);
     setAiPrompt('');
     setAiError('');
@@ -304,6 +323,17 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
     setAmountPaid(String(doc.amountPaid || 0));
     setNotes(doc.notes || '');
     setTerms(doc.terms || DEFAULT_BILLING_TERMS);
+    setUseCustomLetterhead(Boolean(doc.useCustomLetterhead));
+    setHideDefaultHeader(Boolean(doc.hideDefaultHeader));
+    setLetterheadBgDataUrl(doc.letterheadBgDataUrl || '');
+    setLetterheadBgOpacity(
+      typeof doc.letterheadBgOpacity === 'number' && Number.isFinite(doc.letterheadBgOpacity)
+        ? Math.max(0.05, Math.min(1, doc.letterheadBgOpacity))
+        : typeof companyProfile.quotationLetterheadOpacity === 'number' &&
+            Number.isFinite(companyProfile.quotationLetterheadOpacity)
+          ? Math.max(0.05, Math.min(1, companyProfile.quotationLetterheadOpacity))
+          : 0.14
+    );
     setLineRows(
       doc.items.length > 0
         ? doc.items.map((it) => ({
@@ -454,6 +484,26 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
     }
   };
 
+  const handleUploadLetterheadBg = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSaveError('');
+    try {
+      const compressed = await compressBoundedScreenshotDataUrl(file, {
+        maxWidth: 1000,
+        maxHeight: 1400,
+        quality: 0.78,
+        maxChars: 220000,
+      });
+      setLetterheadBgDataUrl(compressed);
+      setUseCustomLetterhead(true);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Failed to process letterhead background image.'
+      );
+    }
+  };
+
   const handleSaveDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaveError('');
@@ -500,6 +550,10 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
           status,
           notes: notes.trim(),
           terms: terms.trim(),
+          useCustomLetterhead,
+          hideDefaultHeader,
+          letterheadBgDataUrl,
+          letterheadBgOpacity,
         });
         setActionFeedback(`Updated ${BILLING_DOC_TYPE_LABELS[docType]} ${docNumber.trim()}.`);
       } else {
@@ -522,6 +576,10 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
           status,
           notes: notes.trim(),
           terms: terms.trim(),
+          useCustomLetterhead,
+          hideDefaultHeader,
+          letterheadBgDataUrl,
+          letterheadBgOpacity,
         });
         setActionFeedback(`Saved ${created.docNumber} to database.`);
       }
@@ -584,6 +642,10 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
       notes: notes.trim() || undefined,
       terms: terms.trim() || undefined,
       whatsappShared: editingDoc?.whatsappShared ?? false,
+      useCustomLetterhead,
+      hideDefaultHeader,
+      letterheadBgDataUrl: letterheadBgDataUrl || undefined,
+      letterheadBgOpacity,
       createdAt: editingDoc?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -1791,6 +1853,139 @@ export function BillingInvoicesView({ onTriggerWhatsapp }: BillingInvoicesViewPr
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              {/* Custom Background Letterhead Option */}
+              <div
+                data-testid="billing-letterhead-section"
+                className="p-4 bg-slate-50 border border-slate-200 rounded-md space-y-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-900 cursor-pointer">
+                    <input
+                      id="bill-use-custom-letterhead"
+                      type="checkbox"
+                      checked={useCustomLetterhead}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setUseCustomLetterhead(checked);
+                        if (checked && !letterheadBgDataUrl && companyProfile.quotationLetterheadBgDataUrl) {
+                          setLetterheadBgDataUrl(companyProfile.quotationLetterheadBgDataUrl);
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-orange-700"
+                    />
+                    <span>Use Custom Background Letterhead (Print &amp; PDF)</span>
+                  </label>
+                  <span className="text-[11px] font-mono text-slate-500">
+                    {useCustomLetterhead ? 'Active on A4 Print & PDF' : 'Standard Header Only'}
+                  </span>
+                </div>
+
+                {useCustomLetterhead && (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-2 border-t border-slate-200">
+                    <div className="w-16 h-22 rounded border border-slate-300 bg-white flex items-center justify-center overflow-hidden shrink-0">
+                      {letterheadBgDataUrl || companyProfile.quotationLetterheadBgDataUrl ? (
+                        <img
+                          src={letterheadBgDataUrl || companyProfile.quotationLetterheadBgDataUrl}
+                          alt="Document Letterhead Preview"
+                          className={`w-full h-full object-cover ${
+                            letterheadBgOpacity <= 0.15
+                              ? 'opacity-15'
+                              : letterheadBgOpacity <= 0.3
+                                ? 'opacity-25'
+                                : letterheadBgOpacity <= 0.5
+                                  ? 'opacity-40'
+                                  : letterheadBgOpacity <= 0.75
+                                    ? 'opacity-70'
+                                    : 'opacity-90'
+                          }`}
+                        />
+                      ) : (
+                        <span className="text-[10px] text-slate-400 text-center px-1">No BG</span>
+                      )}
+                    </div>
+
+                    <div className="flex-1 space-y-2.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 cursor-pointer">
+                          <ImagePlus className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>
+                            {letterheadBgDataUrl ? 'Replace Background' : 'Upload Background Image'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            data-testid="bill-letterhead-upload"
+                            onChange={handleUploadLetterheadBg}
+                            className="sr-only"
+                          />
+                        </label>
+                        {companyProfile.quotationLetterheadBgDataUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLetterheadBgDataUrl(companyProfile.quotationLetterheadBgDataUrl || '');
+                              setLetterheadBgOpacity(
+                                typeof companyProfile.quotationLetterheadOpacity === 'number'
+                                  ? companyProfile.quotationLetterheadOpacity
+                                  : 0.14
+                              );
+                            }}
+                            className="px-2.5 py-1.5 text-xs font-medium text-orange-800 bg-orange-50 border border-orange-200 rounded-md hover:bg-orange-100"
+                          >
+                            Use Company Default
+                          </button>
+                        )}
+                        {letterheadBgDataUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setLetterheadBgDataUrl('')}
+                            className="px-2.5 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-200 rounded-md hover:bg-red-50"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                        <div>
+                          <div className="flex items-center justify-between text-[11px] text-slate-700 mb-1">
+                            <label htmlFor="bill-letterhead-opacity" className="font-medium">
+                              Watermark / Letterhead Opacity
+                            </label>
+                            <span className="font-mono font-semibold text-slate-900">
+                              {Math.round(letterheadBgOpacity * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            id="bill-letterhead-opacity"
+                            type="range"
+                            min="0.05"
+                            max="1"
+                            step="0.05"
+                            value={letterheadBgOpacity}
+                            onChange={(e) => setLetterheadBgOpacity(Number(e.target.value) || 0.14)}
+                            className="w-full accent-orange-700"
+                          />
+                        </div>
+
+                        <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer pt-1">
+                          <input
+                            id="bill-hide-default-header"
+                            type="checkbox"
+                            checked={hideDefaultHeader}
+                            onChange={(e) => setHideDefaultHeader(e.target.checked)}
+                            className="mt-0.5 w-4 h-4 rounded border-slate-300 text-orange-700"
+                          />
+                          <span>
+                            Hide default top company banner (use pre-printed header in image)
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Notes, Status, Paid & Totals Summary */}

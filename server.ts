@@ -1,15 +1,48 @@
 import 'dotenv/config';
 import express from 'express';
+import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Type } from '@google/genai';
+import { DevSecStore } from './server/devsecStore.ts';
+import { createDevSecRouter } from './server/devsecRoutes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
+
+function readCliArg(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === flag && i + 1 < args.length) {
+      return args[i + 1];
+    }
+    if (arg.startsWith(`${flag}=`)) {
+      return arg.slice(flag.length + 1);
+    }
+  }
+  return undefined;
+}
+
+function resolvePort(): number {
+  const cliPort = Number(readCliArg('--port'));
+  if (Number.isInteger(cliPort) && cliPort > 0) {
+    return cliPort;
+  }
+  const envPort = Number(process.env.PORT);
+  const nginxPort = Number(process.env.NGINX_PORT);
+  const defaultAppPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
+  if (!isProduction && envPort > 0 && nginxPort > 0 && envPort === nginxPort) {
+    return defaultAppPort;
+  }
+  return envPort > 0 ? envPort : defaultAppPort;
+}
+
+const PORT = resolvePort();
+const HOST = readCliArg('--host') || '0.0.0.0';
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -144,8 +177,21 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
+  const devSecStore = new DevSecStore(__dirname);
+  app.use('/api/devsec', createDevSecRouter(devSecStore));
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, ocrConfigured: Boolean(getGeminiClient()) });
+  });
+
+  app.get('/api/maps/config', (_req, res) => {
+    const rawKey = (
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      ''
+    ).trim();
+    const apiKey = rawKey && rawKey !== 'MY_GOOGLE_MAPS_API_KEY' ? rawKey : '';
+    res.json({ configured: Boolean(apiKey), apiKey });
   });
 
   app.post('/api/ocr/advance-sheet', async (req, res) => {
@@ -462,19 +508,52 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+  let viteServerInstance: { close: () => Promise<void> } | null = null;
+
   if (!isProduction) {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
-      },
-      appType: 'spa',
+    const disableHmr = process.env.DISABLE_HMR === 'true';
+    const viteReadyPromise = (async () => {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: disableHmr ? false : { server: httpServer },
+          ws: disableHmr ? false : { server: httpServer },
+        },
+        appType: 'spa',
+      });
+      viteServerInstance = vite;
+      return vite;
+    })();
+
+    viteReadyPromise.catch((err) => {
+      console.error('Failed to initialize Vite dev middleware:', err);
+      process.exit(1);
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await viteReadyPromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
+    app.use(
+      express.static(distDir, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('manifest.webmanifest')) {
+            res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-cache');
+          } else if (filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js')) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
       const indexPath = path.join(distDir, 'index.html');
       if (fs.existsSync(indexPath)) {
@@ -485,9 +564,33 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AVY INFRA server running at http://0.0.0.0:${PORT}`);
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(PORT, HOST, () => {
+      httpServer.off('error', reject);
+      console.log(`AVY INFRA server running at http://${HOST}:${PORT}`);
+      resolve();
+    });
   });
+
+  const shutdown = () => {
+    void (async () => {
+      try {
+        if (viteServerInstance) {
+          await viteServerInstance.close();
+        }
+      } catch {
+        // Ignore shutdown errors
+      }
+      httpServer.close(() => {
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(0), 1000).unref();
+    })();
+  };
+
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 startServer().catch((err) => {
